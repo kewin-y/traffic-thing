@@ -146,6 +146,62 @@ Use `properties.edge_id` from `edges.geojson` when adding edits. Both the map
 geometry and simulation network come from the same import. OSM attribution is
 recorded in the GeoJSON and manifest; display it when rendering the roads.
 
+### Publish map assets to Convex
+
+After importing, publish the GeoJSON and manifest so the Next.js app can fetch
+them without access to the worker's filesystem. Deploy the backend first with
+`cd app && pnpm exec convex dev --once`. Configure `CONVEX_SITE_URL` and the shared
+`WORKER_API_KEY` as described under [recordings](#recordings-in-convex), then run
+from the repository root:
+
+```bash
+bash scripts/publish-network.sh toronto-downtown
+```
+
+```powershell
+.\scripts\publish-network.ps1 -Network toronto-downtown
+```
+
+Both scripts use the root `.env`, falling back to `worker/.env` if it does not
+exist. They build the importer image and mount `networks/` read-only. The publish
+command can be rerun without importing or downloading OSM again. For a local
+Python environment, the equivalent is:
+
+```bash
+# CONVEX_SITE_URL and WORKER_API_KEY must already be in the process environment.
+worker/.venv/bin/python scripts/publish-network.py toronto-downtown --network-root networks
+```
+
+The publisher checks all four local asset hashes and the network version before
+contacting Convex. `POST /networks/publish` authenticates with the worker key,
+validates the manifest, checks the GeoJSON hash, unique SUMO IDs, edge count, and
+WGS84 coordinates, and stores both files with a versioned `networks` record.
+The current limits are 4 MiB for GeoJSON and 64 KiB for the manifest. SUMO XML
+and demand files remain on the worker and are never uploaded by this command.
+
+Repeating a publish of the same name and version returns the existing record
+and removes duplicate uploads. New versions preserve previous records and files.
+Failed publishes leave local assets unchanged; transient network/server errors
+are retried up to three attempts. The latest lookup selects the most recently
+first-published version; republishing an older version does not promote it.
+
+Signed-in app code can resolve the download URLs through:
+
+```tsx
+const network = useQuery(api.networks.queries.get, {
+  name: "toronto-downtown",
+  // Pass version to pin a simulation or saved scene to an exact import.
+});
+// network.geojsonUrl: load as a MapLibre GeoJSON source.
+// network.manifestUrl: fetch projection, bounds, attribution, and checksums.
+```
+
+The query returns `null` for an unknown name/version and requires authentication.
+The returned storage URLs are bearer links: anyone holding one can download the
+public road assets. No simulation recordings are exposed by this query. This
+pipeline provides the data; connecting the editor's map and edit controls is a
+separate step.
+
 ## HTTP contract
 
 `GET /health` is unauthenticated. `POST /simulate` requires

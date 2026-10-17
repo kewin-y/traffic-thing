@@ -1,6 +1,7 @@
 import { defineSchema } from "convex/server";
 import { authTables } from "@convex-dev/auth/server";
 import { numbersTables } from "./numbers/schema";
+import { networksTables } from "./networks/schema";
 
 // Convex requires a single schema file: feature-owned tables live in
 // `convex/<feature>/schema.ts` fragments and are merged here.
@@ -8,4 +9,5 @@ import { numbersTables } from "./numbers/schema";
 export default defineSchema({
   ...authTables,
   ...numbersTables,
+  ...networksTables,
 });

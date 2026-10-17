@@ -47,4 +47,10 @@ Other commands:
 
 - `pnpm lint` checks code
 - `pnpm build` builds the Next.js app
+- `pnpm test` runs the Convex backend tests
+
+Imported road GeoJSON and network manifests can be published to Convex storage
+using the [network publisher](../worker/README.md#publish-map-assets-to-convex).
+The authenticated `api.networks.queries.get` query resolves their download URLs
+by network name and optional version.
 
