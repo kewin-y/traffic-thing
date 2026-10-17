@@ -29,12 +29,20 @@ import { BUILDING_COLOUR, themeBasemap } from "../lib/basemap-theme";
 import { componentFromBasemap, type BasemapFeature } from "../lib/osm";
 import { renderScene, type SceneLayers } from "../lib/render";
 import { checkScene, SOURCES, type Issue } from "../lib/rules";
-import { componentFromDrop, defaultScene, describe } from "../lib/scene";
+import { componentFromDrop, describe } from "../lib/scene";
+import { useRoadNetwork } from "../hooks/use-road-network";
+import {
+  NETWORK_LAYER,
+  NETWORK_SOURCE,
+  type LoadedNetwork,
+} from "../lib/network";
+import { loadEditorScene, SCENE_STORAGE_KEY } from "../lib/scene-storage";
+import { addNetworkLayer, showNetwork } from "../lib/network-layer";
 import { componentsOverlap, gapBetween } from "../lib/spatial";
 import { ComponentMenu } from "./component-menu";
 import { ToolIcon } from "./tool-icon";
+import { NetworkPanel } from "./network-panel";
 
-const STORAGE_KEY = "traffic-thing:intersection-scene:v2";
 const MEASURE_KEY = "traffic-thing:measurements:v1";
 const TOOL_MIME = "application/x-traffic-thing-tool";
 const LAYER_IDS = ["solid", "marking", "ground"] as const;
@@ -122,7 +130,7 @@ function addSceneLayers(map: MapLibreMap): RoadLayer[] {
       source: "ground",
       paint: { "fill-color": ["get", "colour"] },
     },
-    firstLabel,
+    map.getLayer("osm-buildings") ? "osm-buildings" : firstLabel,
   );
   map.addLayer(
     {
@@ -131,7 +139,7 @@ function addSceneLayers(map: MapLibreMap): RoadLayer[] {
       source: "marking",
       paint: { "fill-color": ["get", "colour"] },
     },
-    firstLabel,
+    map.getLayer("osm-buildings") ? "osm-buildings" : firstLabel,
   );
   map.addLayer(
     {
@@ -308,9 +316,12 @@ function resized(
 }
 
 export function IntersectionEditor() {
-  const [scene, setScene] = useState<SceneComponent[]>(() =>
-    load(STORAGE_KEY, defaultScene),
-  );
+  const [scene, setScene] = useState<SceneComponent[]>(loadEditorScene);
+  const network = useRoadNetwork();
+  const [roadSelection, setRoadSelection] = useState<{
+    networkId: string;
+    edgeId: string;
+  } | null>(null);
   const [measurements, setMeasurements] = useState<Measurement[]>(() =>
     load(MEASURE_KEY, () => []),
   );
@@ -330,6 +341,7 @@ export function IntersectionEditor() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const networkRef = useRef<LoadedNetwork | null>(null);
   const libRef = useRef<typeof import("maplibre-gl") | null>(null);
   const sceneRef = useRef(scene);
   const historyRef = useRef<SceneComponent[][]>([]);
@@ -360,6 +372,7 @@ export function IntersectionEditor() {
   }, []);
 
   const select = useCallback((id: string | null) => {
+    setRoadSelection(null);
     selectedRef.current = id;
     setSelected(id);
   }, []);
@@ -502,15 +515,13 @@ export function IntersectionEditor() {
           layers: [...LAYER_IDS],
         })[0]?.properties?.cid as string | undefined;
 
-      /** A basemap building or road under the pointer, if any. */
+      /** Basemap buildings remain visual components; roads use the SUMO layer. */
       const basemapAt = (point: {
         x: number;
         y: number;
       }): BasemapFeature | null => {
-        const layers = [
-          "osm-buildings",
-          ...roadLayersRef.current.map((layer) => layer.id),
-        ].filter((id) => map!.getLayer(id));
+        const layers = ["osm-buildings"].filter((id) => map!.getLayer(id));
+        if (!layers.length) return null;
         const [hit] = map!.queryRenderedFeatures([point.x, point.y], {
           layers,
         });
@@ -570,7 +581,12 @@ export function IntersectionEditor() {
               ? "move"
               : id
                 ? "pointer"
-                : "";
+                : map!.getLayer(NETWORK_LAYER) &&
+                    map!.queryRenderedFeatures(e.point, {
+                      layers: [NETWORK_LAYER],
+                    }).length
+                  ? "pointer"
+                  : "";
           return;
         }
         const [x, y] = toLocal(e.lngLat.lng, e.lngLat.lat);
@@ -643,8 +659,22 @@ export function IntersectionEditor() {
           return;
         }
 
-        // Nothing of ours here: turn the basemap building or road into a component.
+        // Imported roads retain their SUMO identity instead of becoming scenery.
         if (!id) {
+          const layers = ["osm-buildings", NETWORK_LAYER].filter((layer) =>
+            map!.getLayer(layer),
+          );
+          const hit = layers.length
+            ? map!.queryRenderedFeatures(e.point, { layers })[0]
+            : null;
+          if (hit?.layer.id === NETWORK_LAYER && networkRef.current) {
+            const edgeId = hit.properties?.edge_id;
+            if (typeof edgeId === "string") {
+              select(null);
+              setRoadSelection({ networkId: networkRef.current.id, edgeId });
+              return;
+            }
+          }
           const feature = basemapAt(e.point);
           const converted = feature && componentFromBasemap(feature);
           if (converted) {
@@ -680,8 +710,59 @@ export function IntersectionEditor() {
   // Redraw and persist whenever the scene changes.
   useEffect(() => {
     if (mapReady && frameRef.current === null) draw();
-    save(STORAGE_KEY, scene);
+    save(SCENE_STORAGE_KEY, scene);
   }, [scene, mapReady, draw]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const data = network.data;
+    if (!mapReady || !map || !data) return;
+    networkRef.current = data;
+    addNetworkLayer(map, data);
+    // The import's buffer extends beyond the original editor camera limits.
+    map.setMaxBounds([
+      [
+        Math.min(DOWNTOWN_BOUNDS[0][0], data.bounds[0][0] - 0.01),
+        Math.min(DOWNTOWN_BOUNDS[0][1], data.bounds[0][1] - 0.01),
+      ],
+      [
+        Math.max(DOWNTOWN_BOUNDS[1][0], data.bounds[1][0] + 0.01),
+        Math.max(DOWNTOWN_BOUNDS[1][1], data.bounds[1][1] + 0.01),
+      ],
+    ]);
+    showNetwork(map, data);
+    return () => {
+      networkRef.current = null;
+      if (mapRef.current !== map) return;
+      if (map.getLayer(NETWORK_LAYER)) map.removeLayer(NETWORK_LAYER);
+      if (map.getSource(NETWORK_SOURCE)) map.removeSource(NETWORK_SOURCE);
+    };
+  }, [network.data, mapReady]);
+
+  const selectedRoad = useMemo(() => {
+    if (!network.data || roadSelection?.networkId !== network.data.id)
+      return null;
+    return (
+      network.data.roads.features.find(
+        (road) => road.properties.edge_id === roadSelection.edgeId,
+      ) ?? null
+    );
+  }, [network.data, roadSelection]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const id = selectedRoad?.properties.edge_id;
+    if (!mapReady || !map?.getSource(NETWORK_SOURCE) || !id) return;
+    map.setFeatureState({ source: NETWORK_SOURCE, id }, { selected: true });
+    return () => {
+      if (mapRef.current === map && map.getSource(NETWORK_SOURCE)) {
+        map.setFeatureState(
+          { source: NETWORK_SOURCE, id },
+          { selected: false },
+        );
+      }
+    };
+  }, [mapReady, selectedRoad]);
 
   // Hide basemap buildings and roads that were converted or deleted.
   useEffect(() => {
@@ -1080,9 +1161,16 @@ export function IntersectionEditor() {
           </div>
         ))}
         <p className="px-1 pt-1 text-[10px] leading-snug text-muted-foreground">
-          Click any building or street on the map to make it editable.
+          Select a highlighted road to inspect it. Click a building to edit its
+          appearance.
         </p>
       </aside>
+
+      <NetworkPanel
+        network={network}
+        selectedRoad={selectedRoad}
+        onClearSelection={() => setRoadSelection(null)}
+      />
 
       <div
         role="toolbar"
@@ -1212,17 +1300,21 @@ export function IntersectionEditor() {
         <Button
           variant="ghost"
           size="icon-lg"
-          aria-label="Back to the intersection"
-          title="Back to the intersection"
+          aria-label="Show imported network"
+          title="Show imported network"
           className="rounded-none text-xs"
-          onClick={() =>
-            mapRef.current?.flyTo({
-              center: [ORIGIN.lng, ORIGIN.lat],
-              zoom: 17,
-              pitch: 58,
-              bearing: GRID_BEARING - 25,
-            })
-          }
+          onClick={() => {
+            const map = mapRef.current;
+            if (!map) return;
+            if (network.data) showNetwork(map, network.data, true);
+            else
+              map.flyTo({
+                center: [ORIGIN.lng, ORIGIN.lat],
+                zoom: 17,
+                pitch: 58,
+                bearing: GRID_BEARING - 25,
+              });
+          }}
         >
           ⌖
         </Button>

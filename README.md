@@ -57,17 +57,24 @@ cd ../worker && uv sync --locked
 3. The 3D editor opens at [localhost:3000](http://localhost:3000) on a downtown Toronto
    basemap from MapTiler. Add your MapTiler key to `app/.env.local` as
    `MAPTILER_API_KEY=...` and restart `pnpm dev`. The key stays on the server: the
-   browser fetches tiles through `/api/maptiler/`. Exported scenarios can be
-   [simulated in SUMO](worker/README.md#editor-scenarios). The export panel is hidden
-   for now.
+   browser fetches tiles through `/api/maptiler/`. Import and
+   [publish the Toronto network](worker/README.md#publish-map-assets-to-convex)
+   to load its roads from Convex. The editor opens at the imported network extent.
 
 ## Editor features
 
 - **Add**: drag tools from the left panel onto the map. Lanes and crosswalks snap to the
   Spadina & College sample intersection; elsewhere they're placed where you drop them.
-- **Edit the real map**: click an OpenStreetMap building or street to turn it into an
-  editable component. Deleting it removes it from the basemap too. OSM street trees
+- **Inspect imported roads**: teal roads come from the published SUMO network.
+  Click a segment to highlight one direction of travel and inspect its lane count,
+  speed limit, and length. Selection retains its network version and SUMO edge ID;
+  road simulation edits are not connected yet. The target button fits the network.
+- **Edit buildings**: click an OpenStreetMap building to turn it into an
+  editable scene component. Deleting it removes it from the basemap too. OSM street trees
   aren't in the vector tiles, so trees are added with the Tree tool.
+- **Saved scenes**: new scenes start empty. Existing saves are migrated to remove
+  automatic demo objects while preserving user-added components. The old save is
+  retained under its original local-storage key.
 - **Select, move and resize**: click to select, drag to move, and drag the white handles
   to change length or width. Right-click for exact dimensions, rotation and delete.
   Ctrl+Z undoes.
