@@ -5,9 +5,8 @@ A traffic planning app for editing road scenarios and comparing SUMO simulations
 ## Repository layout
 
 - [`app/`](app/README.md) — Next.js frontend, Convex backend, and authentication.
-  Its README covers app setup, structure, and commands.
 - [`worker/`](worker/README.md) — uv-managed Python/SUMO HTTP service.
-  Its README covers network assets, local execution, Docker, and the simulation API.
+- [`scripts/`](scripts/) — Bash and PowerShell scripts to create demo network assets.
 - [`compose.yaml`](compose.yaml) — local container configuration for the worker.
 - `networks/` — local SUMO network and demand files; ignored by Git and mounted
   read-only into the worker.
@@ -52,11 +51,9 @@ cd ../worker && uv sync --locked
 ## Getting started
 
 1. Follow the [app setup](app/README.md#usage) to run Next.js and Convex.
-2. Follow the [worker setup](worker/README.md#local-development) to create demo
-   network assets and run a local simulation service.
-3. For a containerized service, follow the [worker Docker instructions](worker/README.md#docker).
-   Run Compose commands from the repository root.
-4. The 3D editor opens at [localhost:3000](http://localhost:3000) on a downtown Toronto
+2. Follow the [worker setup](worker/README.md#docker) to configure the API key,
+   create demo assets with the supplied script, and start the worker with Docker.
+3. The 3D editor opens at [localhost:3000](http://localhost:3000) on a downtown Toronto
    basemap from MapTiler. Add your MapTiler key to `app/.env.local` as
    `MAPTILER_API_KEY=...` and restart `pnpm dev`. The key stays on the server: the
    browser fetches tiles through `/api/maptiler/`. Exported scenarios can be

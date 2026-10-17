@@ -1,9 +1,8 @@
 # SUMO worker
 
 Run this simulation HTTP service **only through Docker**, including development.
-The image provides Python 3.12, SUMO, `sumolib`, `traci`, and `libsumo` 1.28.0;
-no host Python, uv, SUMO, or Nix installation is needed. Each request runs in an
-isolated subprocess. Mounted source networks are never modified.
+The image provides Python 3.12, SUMO, `sumolib`, `traci`, and `libsumo` 1.28.0.
+Each request runs in an isolated subprocess. Mounted source networks are never modified.
 
 ## Editor scenarios
 
@@ -40,9 +39,26 @@ are not modelled.
 
 ## Docker
 
-Run commands from the repository root. Copy `worker/.env.example` to `.env`,
-replace `WORKER_API_KEY` with a long random secret, and keep the file out of
-version control. Compose loads `.env` automatically; no shell exports are needed.
+Run commands from the repository root with Docker running. Copy
+`worker/.env.example` to `.env` and replace `WORKER_API_KEY` with a long random
+secret. Compose and the demo scripts load this root `.env` automatically.
+
+On Bash:
+
+```bash
+cp worker/.env.example .env
+openssl rand -hex 32
+```
+
+On PowerShell:
+
+```powershell
+Copy-Item worker/.env.example .env
+[guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+```
+
+Copy the generated key into `.env` and keep the file out of version control.
+Leave `CONVEX_SITE_URL` empty unless you are configuring [recording uploads](#recordings-in-convex).
 
 Create a demo network and demand using the script for your shell (it builds the
 worker image and runs SUMO inside Docker):
@@ -60,8 +76,11 @@ Both refuse to overwrite `networks/demo`; use `--force` (Bash) or `-Force`
 `networks/<name>/network.net.xml` and `demand.rou.xml`. Then start the worker:
 
 ```bash
-docker compose up -d --build worker
+docker compose up -d worker
 ```
+
+The demo script already builds the image. If you supply your own assets instead,
+or change worker code, start with `docker compose up -d --build worker`.
 
 Network assets are mounted read-only and must be readable by container UID 10001.
 The image runs as that non-root user and honors `PORT` (default 8000), including
@@ -69,43 +88,13 @@ its healthcheck.
 For Railway, build with `worker/` as the build context and provide a populated
 volume at `/data/networks`; the image intentionally contains no Toronto data.
 
-### Windows (PowerShell)
+On Windows, use Docker Desktop with the WSL 2 backend and Linux containers.
+Check <http://localhost:8000/health>. To run a simulation, open
+<http://localhost:8000/docs>, authorize with your API key, and try `POST /simulate`:
 
-Install and start Docker Desktop with the WSL 2 backend and Linux containers.
-No local Python or SUMO installation is needed.
-
-1. Open **PowerShell** in the repository root (the folder containing `compose.yaml`).
-   Paste each command below and press **Enter**:
-
-   ```powershell
-   Copy-Item worker/.env.example .env
-   [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
-   notepad .env
-   ```
-
-2. Copy the generated 64-character string into `.env`, replacing the placeholder:
-
-   ```dotenv
-   WORKER_API_KEY=paste-the-generated-string-here
-   ```
-
-   Save and close Notepad. No quotes or spaces are needed. Keep `.env` out of
-   version control; Docker Compose loads it automatically.
-
-3. Create the demo scenario and start the worker:
-
-   ```powershell
-   .\scripts\create-demo-network.ps1
-   docker compose up -d worker
-   ```
-
-4. Check <http://localhost:8000/health>. Open <http://localhost:8000/docs>,
-   expand `POST /simulate`, and click **Try it out**. Set Authorization to
-   `Bearer <your generated key>` and use this body, then click **Execute**:
-
-   ```json
-   {"network":"demo","duration_seconds":200,"seed":42,"edits":[]}
-   ```
+```json
+{"network":"demo","duration_seconds":200,"seed":42,"edits":[]}
+```
 
 View logs: `docker compose logs -f worker`. Stop: `docker compose down`.
 
@@ -154,7 +143,12 @@ URL (for example `https://your-deployment.convex.site`). Configure the same
 ```bash
 cd app
 npx convex env set WORKER_API_KEY '<same-key-as-worker>'
+cd ..
 ```
+
+The Convex key is a deployment environment variable; adding it to
+`app/.env.local` does not configure the endpoint. After editing the root `.env`,
+run `docker compose up -d worker` to apply the worker environment.
 
 Add `"record": true` to a simulation request to record a compressed JSON timeline.
 `sample_interval_seconds` defaults to 5 (allowed range: 1–60). After simulation,
@@ -177,8 +171,7 @@ The simulation response includes:
 ```
 
 Local recording files are deleted after each request, including failed uploads.
-The worker no longer serves `/timelines/{id}`. Keep `storage_id` with the
-simulation result; backend playback code can resolve it with
+Keep `storage_id` with the simulation result; backend playback code can resolve it with
 `ctx.storage.getUrl(storageId)`. Recording requests return 503 if
 `CONVEX_SITE_URL` is missing, or 502 if obtaining the upload URL or uploading fails.
 Requests without recording do not need a Convex connection.

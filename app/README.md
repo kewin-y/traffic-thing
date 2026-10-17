@@ -1,7 +1,7 @@
 # Traffic app
 
-Next.js frontend and Convex backend for the traffic planning application, built
-from a starter with authentication, a landing page, and a dashboard with sample data.
+Next.js frontend and Convex backend with email/password authentication, a landing
+page, and a dashboard with sample data.
 
 See the [repository overview](../README.md) for the development environment and
 the [worker README](../worker/README.md) for SUMO simulation setup and its HTTP API.
@@ -36,7 +36,12 @@ pnpm install
 pnpm dev
 ```
 
-Follow the setup prompts to create a new Convex project and configure authentication. Open [localhost:3000](http://localhost:3000).
+The `predev` script runs `convex init` and `setup.mjs --once` to configure
+Convex and authentication. The `dev` script starts Convex and Next.js together.
+Follow the setup prompts, then open [localhost:3000](http://localhost:3000).
+
+For recording uploads, set `WORKER_API_KEY` on the Convex deployment from this
+directory, using the same key as the worker. See [recording setup](../worker/README.md#recordings-in-convex).
 
 Other commands:
 

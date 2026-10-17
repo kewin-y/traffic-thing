@@ -6,7 +6,9 @@ Feature-based layout: one folder per feature, cross-feature files at the root.
 convex/
   schema.ts        # single schema (Convex requirement) — merges feature fragments
   auth.ts          # Convex Auth — must stay at api.auth.* (client convention)
-  http.ts          # HttpRouter registration (auth routes)
+  http.ts          # auth routes and POST /networks/upload-url
+  networks/
+    httpActions.ts # worker-authenticated recording upload URL
   numbers/
     schema.ts      # table fragment, merged into the root schema
     queries.ts     # listNumbers
@@ -14,11 +16,9 @@ convex/
     actions.ts     # runSample
 ```
 
-Adding a feature:
-
-```bash
-npx convex -h  # push, dev, and codegen live here; docs: https://docs.convex.dev/functions
-```
+Add feature functions under `convex/<feature>/` and merge their table definitions
+in `schema.ts`. Run `pnpm dev` from `app/` to sync backend changes and regenerate
+the API types.
 
 Client usage example:
 
