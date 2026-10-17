@@ -1,33 +1,8 @@
 # SUMO worker
 
-This directory contains the uv-managed Python 3.12 simulation HTTP service.
-It uses SUMO, `sumolib`, `traci`, and `libsumo` 1.28.0. Each request runs in an
-isolated subprocess; network edits and simulation outputs use temporary files.
-Mounted source networks are never modified.
-
-## Local development
-
-From the repository root, create a small synthetic network and fixed demand:
-
-```bash
-cd worker
-uv sync --locked
-mkdir -p ../networks/demo
-uv run netgenerate --grid --grid.number 3 --default.lanenumber 2 \
-  --output-file ../networks/demo/network.net.xml
-uv run python -c 'from pathlib import Path; Path("../networks/demo/demand.rou.xml").write_text("""<routes>
-  <route id="main" edges="A0A1 A1A2 A2B2 B2C2"/>
-  <vehicle id="car-0" route="main" depart="0"/>
-  <vehicle id="car-1" route="main" depart="1"/>
-</routes>""")'
-export WORKER_API_KEY="$(uv run python -c 'import secrets; print(secrets.token_hex(32))')"
-export NETWORK_ROOT="$(realpath ../networks)"
-uv run uvicorn traffic_worker.api:app --host 127.0.0.1 --port 8000
-```
-
-On Linux/Nix, enter the [repository devshell](../README.md#development-environment)
-first: its shared libraries are needed by the native Python wheels. `uv` provisions
-Python. Docker supplies these native libraries independently and does not require Nix.
+Run this simulation HTTP service **only through Docker**, including development.
+The image provides Python 3.12, SUMO, `sumolib`, `traci`, and `libsumo` 1.28.0.
+Each request runs in an isolated subprocess. Mounted source networks are never modified.
 
 ## Editor scenarios
 
@@ -64,78 +39,178 @@ are not modelled.
 
 ## Docker
 
-After creating `networks/demo` as above, run from the repository root with
-`WORKER_API_KEY` exported in the same shell:
+Run commands from the repository root with Docker running. Copy
+`worker/.env.example` to `.env` and replace `WORKER_API_KEY` with a long random
+secret. Compose and the demo scripts load this root `.env` automatically.
+
+On Bash:
 
 ```bash
-docker compose up --build
+cp worker/.env.example .env
+openssl rand -hex 32
 ```
 
-Alternatively, copy `worker/.env.example` to `worker/.env`, replace the example
-secret, and use `docker compose --env-file worker/.env up --build`. Network assets
-are mounted read-only and must be readable by container UID 10001. The image runs
-as that non-root user and honors `PORT` (default 8000), including its healthcheck.
+On PowerShell:
+
+```powershell
+Copy-Item worker/.env.example .env
+[guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+```
+
+Copy the generated key into `.env` and keep the file out of version control.
+Leave `CONVEX_SITE_URL` empty unless you are configuring [recording uploads](#recordings-in-convex).
+
+Create a demo network and demand using the script for your shell (it builds the
+worker image and runs SUMO inside Docker):
+
+```bash
+bash scripts/create-demo-network.sh
+```
+
+```powershell
+.\scripts\create-demo-network.ps1
+```
+
+Both refuse to overwrite `networks/demo`; use `--force` (Bash) or `-Force`
+(PowerShell) to regenerate it. Alternatively, supply your own
+`networks/<name>/network.net.xml` and `demand.rou.xml`. Then start the worker:
+
+```bash
+docker compose up -d worker
+```
+
+The demo script already builds the image. If you supply your own assets instead,
+or change worker code, start with `docker compose up -d --build worker`.
+
+Network assets are mounted read-only and must be readable by container UID 10001.
+The image runs as that non-root user and honors `PORT` (default 8000), including
+its healthcheck.
 For Railway, build with `worker/` as the build context and provide a populated
 volume at `/data/networks`; the image intentionally contains no Toronto data.
 
-### Windows (PowerShell)
+On Windows, use Docker Desktop with the WSL 2 backend and Linux containers.
+Check <http://localhost:8000/health>. To run a simulation, open
+<http://localhost:8000/docs>, authorize with your API key, and try `POST /simulate`:
 
-Install and start Docker Desktop with the WSL 2 backend and Linux containers.
-No local Python or SUMO installation is needed.
-
-1. Open **PowerShell** in the repository root (the folder containing `compose.yaml`).
-   Paste each command below and press **Enter**:
-
-   ```powershell
-   Copy-Item worker/.env.example .env
-   [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
-   notepad .env
-   ```
-
-2. Copy the generated 64-character string into `.env`, replacing the placeholder:
-
-   ```dotenv
-   WORKER_API_KEY=paste-the-generated-string-here
-   ```
-
-   Save and close Notepad. No quotes or spaces are needed. Keep `.env` out of
-   version control; Docker Compose loads it automatically.
-
-3. Paste this block into PowerShell to create a demo scenario and start the worker:
-
-   ```powershell
-   New-Item -ItemType Directory -Force networks/demo | Out-Null
-   docker compose build worker
-   docker compose run --rm --no-deps --volume "${PWD}/networks:/output" worker netgenerate --grid --grid.number 3 --default.lanenumber 2 --output-file /output/demo/network.net.xml
-   @'
-   <routes>
-     <route id="main" edges="A0A1 A1A2 A2B2 B2C2"/>
-     <vehicle id="car-0" route="main" depart="0"/>
-     <vehicle id="car-1" route="main" depart="1"/>
-   </routes>
-   '@ | Set-Content -Encoding ascii networks/demo/demand.rou.xml
-   docker compose up -d worker
-   ```
-
-4. Check <http://localhost:8000/health>. Open <http://localhost:8000/docs>,
-   expand `POST /simulate`, and click **Try it out**. Set Authorization to
-   `Bearer <your generated key>` and use this body, then click **Execute**:
-
-   ```json
-   {"network":"demo","duration_seconds":200,"seed":42,"edits":[]}
-   ```
+```json
+{"network":"demo","duration_seconds":200,"seed":42,"edits":[]}
+```
 
 View logs: `docker compose logs -f worker`. Stop: `docker compose down`.
+
+## Toronto downtown import
+
+Import real OpenStreetMap roads around the CN Tower, Rogers Centre, Union Station,
+the Entertainment District, and the waterfront. From the repository root:
+
+```bash
+bash scripts/import-toronto.sh
+```
+
+```powershell
+.\scripts\import-toronto.ps1
+```
+
+The scripts build a separate Docker importer image; no host Python or API key is
+required. The test rectangle is `[-79.405, 43.635, -79.370, 43.660]` in
+`[west, south, east, north]` order. The simulation includes a 750 m buffer and
+keeps complete edges crossing that boundary.
+
+Files are written to `networks/toronto-downtown/`:
+
+| File | Purpose |
+| --- | --- |
+| `network.net.xml` | Passenger-car SUMO network, using the largest connected component |
+| `demand.rou.xml` | Synthetic routes for one hour, seed 42, targeting one vehicle every two seconds |
+| `edges.geojson` | WGS84 road geometry with SUMO edge IDs for map selection and edit requests |
+| `manifest.json` | Bounds, projection, network version, checksums, attribution, and demand settings |
+| `source.osm.xml` | The OSM snapshot used to build this network |
+
+Traffic demand is synthetic, not measured Toronto traffic. Imported road
+attributes and signal programs need review before using results for planning.
+The importer validates route loading with SUMO before publishing the files.
+
+The downloaded snapshot is cached under `networks/.cache/`. Use `--force` to
+regenerate from it, or `--force --refresh` to download current OSM data. In
+PowerShell, use `-Force` and `-Refresh`. A failed generation preserves the previous
+import. Generated files are ignored by Git.
+
+Build and start the worker with `docker compose up -d --build worker`, then send
+this body to its authenticated `POST /simulate` endpoint:
+
+```json
+{"network":"toronto-downtown","duration_seconds":200,"seed":42,"edits":[]}
+```
+
+Use `properties.edge_id` from `edges.geojson` when adding edits. Both the map
+geometry and simulation network come from the same import. OSM attribution is
+recorded in the GeoJSON and manifest; display it when rendering the roads.
+
+### Publish map assets to Convex
+
+After importing, publish the GeoJSON and manifest so the Next.js app can fetch
+them without access to the worker's filesystem. Deploy the backend first with
+`cd app && pnpm exec convex dev --once`. Configure `CONVEX_SITE_URL` and the shared
+`WORKER_API_KEY` as described under [recordings](#recordings-in-convex), then run
+from the repository root:
+
+```bash
+bash scripts/publish-network.sh toronto-downtown
+```
+
+```powershell
+.\scripts\publish-network.ps1 -Network toronto-downtown
+```
+
+Both scripts use the root `.env`, falling back to `worker/.env` if it does not
+exist. They build the importer image and mount `networks/` read-only. The publish
+command can be rerun without importing or downloading OSM again. For a local
+Python environment, the equivalent is:
+
+```bash
+# CONVEX_SITE_URL and WORKER_API_KEY must already be in the process environment.
+worker/.venv/bin/python scripts/publish-network.py toronto-downtown --network-root networks
+```
+
+The publisher checks all four local asset hashes and the network version before
+contacting Convex. `POST /networks/publish` authenticates with the worker key,
+validates the manifest, checks the GeoJSON hash, unique SUMO IDs, edge count, and
+WGS84 coordinates, and stores both files with a versioned `networks` record.
+The current limits are 4 MiB for GeoJSON and 64 KiB for the manifest. SUMO XML
+and demand files remain on the worker and are never uploaded by this command.
+
+Repeating a publish of the same name and version returns the existing record
+and removes duplicate uploads. New versions preserve previous records and files.
+Failed publishes leave local assets unchanged; transient network/server errors
+are retried up to three attempts. The latest lookup selects the most recently
+first-published version; republishing an older version does not promote it.
+
+Signed-in app code can resolve the download URLs through:
+
+```tsx
+const network = useQuery(api.networks.queries.get, {
+  name: "toronto-downtown",
+  // Pass version to pin a simulation or saved scene to an exact import.
+});
+// network.geojsonUrl: load as a MapLibre GeoJSON source.
+// network.manifestUrl: fetch projection, bounds, attribution, and checksums.
+```
+
+The query returns `null` for an unknown name/version and requires authentication.
+The returned storage URLs are bearer links: anyone holding one can download the
+public road assets. No simulation recordings are exposed by this query. This
+pipeline provides the data; connecting the editor's map and edit controls is a
+separate step.
 
 ## HTTP contract
 
 `GET /health` is unauthenticated. `POST /simulate` requires
 `Authorization: Bearer <WORKER_API_KEY>`. Interactive schemas are at `/docs`.
-For example, using the same exported key in another terminal:
+For example, replace `<your-key>` with the `WORKER_API_KEY` from `.env`:
 
 ```bash
 curl --fail-with-body http://localhost:8000/simulate \
-  -H "Authorization: Bearer $WORKER_API_KEY" \
+  -H 'Authorization: Bearer <your-key>' \
   -H 'Content-Type: application/json' \
   -d '{"network":"demo","duration_seconds":200,"seed":42,"edits":[
     {"type":"set_speed_limit","edge_id":"A0A1","speed_mps":5.0},
@@ -163,13 +238,53 @@ simulation horizon, not all future demand. Metrics exclude people/containers;
 gridlock teleporting is disabled. Use identical network, demand, horizon, and seed
 when comparing a baseline with a scenario.
 
+### Recordings in Convex
+
+Set `CONVEX_SITE_URL` in the worker environment to your deployment's HTTP actions
+URL (for example `https://your-deployment.convex.site`). Configure the same
+`WORKER_API_KEY` secret on that Convex deployment:
+
+```bash
+cd app
+npx convex env set WORKER_API_KEY '<same-key-as-worker>'
+cd ..
+```
+
+The Convex key is a deployment environment variable; adding it to
+`app/.env.local` does not configure the endpoint. After editing the root `.env`,
+run `docker compose up -d worker` to apply the worker environment.
+
+Add `"record": true` to a simulation request to record a compressed JSON timeline.
+`sample_interval_seconds` defaults to 5 (allowed range: 1–60). After simulation,
+the worker calls `POST /networks/upload-url` with
+`Authorization: Bearer <WORKER_API_KEY>` to obtain `{ "uploadUrl": "..." }`, then
+streams `timeline.json.gz` to that URL as `application/gzip`. The upload URL
+authorizes that upload; the worker does not forward its API key to it.
+
+The simulation response includes:
+
+```json
+{
+  "timeline": {
+    "storage_id": "<Convex _storage ID>",
+    "format": "application/gzip",
+    "filename": "timeline.json.gz",
+    "sample_interval_seconds": 5
+  }
+}
+```
+
+Local recording files are deleted after each request, including failed uploads.
+Keep `storage_id` with the simulation result; backend playback code can resolve it with
+`ctx.storage.getUrl(storageId)`. Recording requests return 503 if
+`CONVEX_SITE_URL` is missing, or 502 if obtaining the upload URL or uploading fails.
+Requests without recording do not need a Convex connection.
+
 Requests are synchronous; no job is persisted. Convex job dispatch, durable
-statuses, recovery, and playback artifacts are not connected yet. The default
+statuses, recovery, and playback are not connected yet. The default
 wall-clock limit is 120 seconds (`SIMULATION_TIMEOUT_SECONDS`); timeout returns
 504 and terminates the simulation process group. Capacity defaults to one run per
 server process (`MAX_CONCURRENT_SIMULATIONS`); excess requests get 503 rather than
 an in-memory queue. Invalid requests or failed simulations return 422; missing
 assets return 404. Run one Uvicorn process per container so its concurrency limit
 corresponds to the container's capacity.
-
-From `worker/`, run boundary regressions with `uv run --locked pytest`.

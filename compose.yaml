@@ -6,6 +6,7 @@ services:
       - "8000:8000"
     environment:
       WORKER_API_KEY: ${WORKER_API_KEY:?Export WORKER_API_KEY before starting the worker}
+      CONVEX_SITE_URL: ${CONVEX_SITE_URL:-}
       NETWORK_ROOT: /data/networks
       TIMELINE_ROOT: /data/timelines
       SIMULATION_TIMEOUT_SECONDS: ${SIMULATION_TIMEOUT_SECONDS:-120}
@@ -17,9 +18,3 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - type: volume
-        source: timelines
-        target: /data/timelines
-
-volumes:
-  timelines:
