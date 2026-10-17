@@ -41,6 +41,11 @@ export interface SceneComponent {
   path?: Vec2[];
   /** Source feature id when the component was converted from the basemap. */
   osmId?: string | number;
+  /**
+   * Where a converted building first stood. Basemap features can merge many
+   * buildings, so this (with the footprint) picks out the one to hide.
+   */
+  osmAt?: Vec2;
 }
 
 /** A single extruded or flat polygon that makes up part of a component. */

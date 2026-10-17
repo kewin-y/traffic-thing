@@ -1,4 +1,10 @@
-import type { Geometry, Position } from "geojson";
+import type {
+  Feature,
+  Geometry,
+  MultiPolygon,
+  Polygon,
+  Position,
+} from "geojson";
 import type { SceneComponent } from "./components";
 import { toLocal, type Vec2 } from "./geometry";
 import { newId } from "./scene";
@@ -21,28 +27,115 @@ export interface BasemapFeature {
   layer: "building" | "road";
 }
 
-function largestRing(geometry: Geometry): Position[] | null {
-  const rings =
+/** The pointer's ray into the scene, used to tell merged buildings apart. */
+export interface PointerRay {
+  /** Where the ray meets the ground, in local metres. */
+  ground: Vec2;
+  /** The camera's position over the ground, in local metres. */
+  camera: Vec2;
+  /** The camera's height above the ground, in metres. */
+  altitude: number;
+}
+
+/** Each polygon's outer ring, in local metres, without the closing point. */
+function outerRings(geometry: Geometry): Vec2[][] {
+  const polygons =
     geometry.type === "Polygon"
-      ? [geometry.coordinates[0]]
+      ? [geometry.coordinates]
       : geometry.type === "MultiPolygon"
-        ? geometry.coordinates.map((polygon) => polygon[0])
+        ? geometry.coordinates
         : [];
-  let best: Position[] | null = null;
-  let bestArea = 0;
-  for (const ring of rings) {
-    let area = 0;
-    for (let i = 0; i < ring.length; i++) {
-      const [x1, y1] = ring[i];
-      const [x2, y2] = ring[(i + 1) % ring.length];
-      area += x1 * y2 - x2 * y1;
-    }
-    if (Math.abs(area) > bestArea) {
-      bestArea = Math.abs(area);
-      best = ring;
+  return polygons
+    .filter((polygon) => polygon[0]?.length >= 4)
+    .map((polygon) =>
+      polygon[0].slice(0, -1).map(([lng, lat]) => toLocal(lng, lat)),
+    );
+}
+
+function contains(ring: Vec2[], [px, py]: Vec2): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
+function centroid(points: Vec2[]): Vec2 {
+  return [
+    points.reduce((sum, p) => sum + p[0], 0) / points.length,
+    points.reduce((sum, p) => sum + p[1], 0) / points.length,
+  ];
+}
+
+/**
+ * The ring the pointer is on. Vector tiles merge many same-height buildings
+ * into one feature, so walk the pointer's ray down from roof height and take
+ * the first footprint it enters.
+ */
+function pickRing(rings: Vec2[][], ray: PointerRay, height: number) {
+  if (rings.length <= 1) return rings[0] ?? null;
+  const [gx, gy] = ray.ground;
+  const [cx, cy] = ray.camera;
+  const steps = 48;
+  for (let i = 0; i <= steps; i++) {
+    const t = Math.min(1, (height * (1 - i / steps)) / ray.altitude);
+    const point: Vec2 = [gx + (cx - gx) * t, gy + (cy - gy) * t];
+    const hit = rings.find((ring) => contains(ring, point));
+    if (hit) return hit;
+  }
+  const distance = (ring: Vec2[]) => {
+    const [x, y] = centroid(ring);
+    return Math.hypot(x - gx, y - gy);
+  };
+  return rings.reduce((best, ring) =>
+    distance(ring) < distance(best) ? ring : best,
+  );
+}
+
+/** A converted or deleted basemap building, as it stood in the basemap. */
+export interface HiddenBuilding {
+  osmId: string | number;
+  /** Absolute outline in local metres. */
+  outline: Vec2[];
+}
+
+/**
+ * The buildings that share a basemap feature with hidden ones but were not
+ * themselves converted or deleted. The whole feature is hidden in the basemap,
+ * so these are drawn separately to keep them on the map.
+ */
+export function remainingBuildings(
+  features: Feature[],
+  hidden: HiddenBuilding[],
+): Feature<Polygon>[] {
+  const result: Feature<Polygon>[] = [];
+  for (const feature of features) {
+    const geometry = feature.geometry as Polygon | MultiPolygon;
+    const polygons =
+      geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiPolygon"
+          ? geometry.coordinates
+          : [];
+    const own = hidden.filter((h) => h.osmId === feature.id);
+    for (const coordinates of polygons) {
+      const outer = coordinates[0];
+      if (!outer || outer.length < 4) continue;
+      const middle = centroid(
+        outer.slice(0, -1).map(([lng, lat]) => toLocal(lng, lat)),
+      );
+      if (own.some((h) => contains(h.outline, middle))) continue;
+      result.push({
+        type: "Feature",
+        properties: { ...feature.properties, osmId: feature.id },
+        geometry: { type: "Polygon", coordinates },
+      });
     }
   }
-  return best;
+  return result;
 }
 
 function longestLine(geometry: Geometry): Position[] | null {
@@ -76,14 +169,13 @@ function centred(points: Vec2[]): { x: number; y: number; relative: Vec2[] } {
  */
 export function componentFromBasemap(
   feature: BasemapFeature,
+  ray: PointerRay,
 ): SceneComponent | null {
   if (feature.layer === "building") {
-    const ring = largestRing(feature.geometry);
-    if (!ring || ring.length < 4) return null;
-    // Drop the closing point; parts close rings themselves.
-    const local = ring.slice(0, -1).map(([lng, lat]) => toLocal(lng, lat));
-    const { x, y, relative } = centred(local);
     const height = Number(feature.properties.render_height ?? 10) || 10;
+    const ring = pickRing(outerRings(feature.geometry), ray, height);
+    if (!ring || ring.length < 3) return null;
+    const { x, y, relative } = centred(ring);
     return {
       id: newId("building"),
       kind: "building",
@@ -94,6 +186,7 @@ export function componentFromBasemap(
       colour: "#e6dccf",
       footprint: relative,
       osmId: feature.id,
+      osmAt: [x, y],
     };
   }
   const line = longestLine(feature.geometry);

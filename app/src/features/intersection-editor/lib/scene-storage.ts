@@ -16,8 +16,17 @@ export function loadEditorScene(): SceneComponent[] {
     // Retire the automatic demo, preserving objects the user added themselves.
     // Leave the old storage key intact so the original scene is recoverable.
     const demoIds = new Set(defaultScene().map((component) => component.id));
+    // Deleted map buildings saved without an outline hid every building merged
+    // into the same basemap feature, so let those reappear.
     return legacy.filter(
-      (component) => component && !demoIds.has(component.id),
+      (component) =>
+        component &&
+        !demoIds.has(component.id) &&
+        !(
+          component.kind === "removed_osm" &&
+          !component.footprint &&
+          String(component.id).startsWith("building-")
+        ),
     );
   } catch {
     return [];

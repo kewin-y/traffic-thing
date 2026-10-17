@@ -4,6 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ExpressionSpecification,
+  FillExtrusionLayerSpecification,
   FilterSpecification,
   GeoJSONSource,
   Map as MapLibreMap,
@@ -26,7 +27,13 @@ import {
   type Vec2,
 } from "../lib/geometry";
 import { BUILDING_COLOUR, themeBasemap } from "../lib/basemap-theme";
-import { componentFromBasemap, type BasemapFeature } from "../lib/osm";
+import {
+  componentFromBasemap,
+  remainingBuildings,
+  type BasemapFeature,
+  type HiddenBuilding,
+  type PointerRay,
+} from "../lib/osm";
 import { renderScene, type SceneLayers } from "../lib/render";
 import { checkScene, SOURCES, type Issue } from "../lib/rules";
 import { componentFromDrop, describe } from "../lib/scene";
@@ -72,12 +79,26 @@ interface RoadLayer {
   filter: FilterSpecification | undefined;
 }
 
+interface BasemapLayers {
+  roads: RoadLayer[];
+  /** Vector source holding the basemap buildings, if the style has any. */
+  buildingSource: string | null;
+}
+
+const BUILDING_PAINT: FillExtrusionLayerSpecification["paint"] = {
+  "fill-extrusion-color": BUILDING_COLOUR,
+  "fill-extrusion-vertical-gradient": true,
+  "fill-extrusion-height": ["coalesce", ["get", "render_height"], 10],
+  "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
+  "fill-extrusion-opacity": 1,
+};
+
 /**
  * Add the editable scene on top of the basemap: road-level parts above the
  * basemap's roads but under its labels, plus 3D extrusions for OSM buildings.
- * Returns the basemap road layers so converted roads can be hidden there.
+ * Returns the basemap layers that converted features are hidden from.
  */
-function addSceneLayers(map: MapLibreMap): RoadLayer[] {
+function addSceneLayers(map: MapLibreMap): BasemapLayers {
   themeBasemap(map);
   const layers = map.getStyle().layers;
   const firstLabel = layers.find((layer) => layer.type === "symbol")?.id;
@@ -97,13 +118,19 @@ function addSceneLayers(map: MapLibreMap): RoadLayer[] {
         source: buildings.source,
         "source-layer": "building",
         minzoom: 14,
-        paint: {
-          "fill-extrusion-color": BUILDING_COLOUR,
-          "fill-extrusion-vertical-gradient": true,
-          "fill-extrusion-height": ["coalesce", ["get", "render_height"], 10],
-          "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
-          "fill-extrusion-opacity": 1,
-        },
+        paint: BUILDING_PAINT,
+      },
+      firstLabel,
+    );
+    // Buildings that share a basemap feature with a converted one.
+    map.addSource("osm-remainder", { type: "geojson", data: EMPTY });
+    map.addLayer(
+      {
+        id: "osm-remainder",
+        type: "fill-extrusion",
+        source: "osm-remainder",
+        minzoom: 14,
+        paint: BUILDING_PAINT,
       },
       firstLabel,
     );
@@ -173,7 +200,25 @@ function addSceneLayers(map: MapLibreMap): RoadLayer[] {
     intensity: 0.32,
     position: [1.4, 200, 35],
   });
-  return roadLayers;
+  return {
+    roads: roadLayers,
+    buildingSource:
+      buildings && "source" in buildings ? buildings.source : null,
+  };
+}
+
+/** Basemap buildings the scene has converted or deleted. */
+function hiddenBuildings(scene: SceneComponent[]): HiddenBuilding[] {
+  return scene.flatMap((c) => {
+    if (c.osmId === undefined || !c.footprint) return [];
+    const [ox, oy] = c.osmAt ?? [c.x, c.y];
+    return [
+      {
+        osmId: c.osmId,
+        outline: c.footprint.map(([x, y]): Vec2 => [ox + x, oy + y]),
+      },
+    ];
+  });
 }
 
 function load<T>(key: string, fallback: () => T): T {
@@ -243,6 +288,31 @@ function breaksSidewalkRule(next: SceneComponent[], changed: Set<string>) {
         componentsOverlap(s, r, 0.05),
     ),
   );
+}
+
+/** The pointer's ray into the scene, from the camera through `ground`. */
+function pointerRay(
+  map: MapLibreMap,
+  ground: { lng: number; lat: number },
+): PointerRay {
+  const center = map.getCenter();
+  const fov = (map.getVerticalFieldOfView() * Math.PI) / 180;
+  const pitch = (map.getPitch() * Math.PI) / 180;
+  const bearing = (map.getBearing() * Math.PI) / 180;
+  const cosLat = Math.cos((center.lat * Math.PI) / 180);
+  // Camera distance to the map centre, in screen pixels and then metres.
+  const pixels = (0.5 / Math.tan(fov / 2)) * map.getContainer().clientHeight;
+  const metres =
+    pixels * ((40_075_016.686 * cosLat) / (512 * 2 ** map.getZoom()));
+  const back = metres * Math.sin(pitch);
+  return {
+    ground: toLocal(ground.lng, ground.lat),
+    camera: toLocal(
+      center.lng - (back * Math.sin(bearing)) / (111_320 * cosLat),
+      center.lat - (back * Math.cos(bearing)) / 111_320,
+    ),
+    altitude: Math.max(1, metres * Math.cos(pitch)),
+  };
 }
 
 interface MenuState {
@@ -345,31 +415,68 @@ export function IntersectionEditor() {
   const libRef = useRef<typeof import("maplibre-gl") | null>(null);
   const sceneRef = useRef(scene);
   const historyRef = useRef<SceneComponent[][]>([]);
+  const futureRef = useRef<SceneComponent[][]>([]);
+  const [history, setHistory] = useState({ undo: 0, redo: 0 });
   const growingRef = useRef(new Map<string, number>());
   const markersRef = useRef(new Map<string, Marker>());
   const handlesRef = useRef(new Map<Handle, Marker>());
   const issueMarkersRef = useRef(new Map<string, Marker>());
   const measureLabelsRef = useRef(new Map<string, Marker>());
   const measurementsRef = useRef(measurements);
-  const roadLayersRef = useRef<RoadLayer[]>([]);
+  const basemapRef = useRef<BasemapLayers>({ roads: [], buildingSource: null });
   const frameRef = useRef<number | null>(null);
   const selectedRef = useRef<string | null>(null);
   const measuringRef = useRef(false);
   const measureStartRef = useRef<string | null>(null);
 
-  const commit = useCallback((next: SceneComponent[]) => {
-    historyRef.current = [...historyRef.current.slice(-49), sceneRef.current];
-    sceneRef.current = next;
-    setScene(next);
-  }, []);
+  const syncHistory = useCallback(
+    () =>
+      setHistory({
+        undo: historyRef.current.length,
+        redo: futureRef.current.length,
+      }),
+    [],
+  );
 
-  const undo = useCallback(() => {
-    const previous = historyRef.current.pop();
-    if (!previous) return;
-    sceneRef.current = previous;
-    setScene(previous);
-    setMenu(null);
-  }, []);
+  /** Record `before` as an undo step; a new edit discards anything to redo. */
+  const remember = useCallback(
+    (before: SceneComponent[]) => {
+      historyRef.current = [...historyRef.current.slice(-49), before];
+      futureRef.current = [];
+      syncHistory();
+    },
+    [syncHistory],
+  );
+
+  const commit = useCallback(
+    (next: SceneComponent[]) => {
+      remember(sceneRef.current);
+      sceneRef.current = next;
+      setScene(next);
+    },
+    [remember],
+  );
+
+  /** Step through history: undo moves back, redo moves forward again. */
+  const travel = useCallback(
+    (direction: "undo" | "redo") => {
+      const [from, to] =
+        direction === "undo"
+          ? [historyRef, futureRef]
+          : [futureRef, historyRef];
+      const target = from.current.pop();
+      if (!target) return;
+      to.current.push(sceneRef.current);
+      sceneRef.current = target;
+      setScene(target);
+      setMenu(null);
+      setIssuePopup(null);
+      syncHistory();
+    },
+    [syncHistory],
+  );
+  const undo = useCallback(() => travel("undo"), [travel]);
+  const redo = useCallback(() => travel("redo"), [travel]);
 
   const select = useCallback((id: string | null) => {
     setRoadSelection(null);
@@ -507,7 +614,7 @@ export function IntersectionEditor() {
         if (url.includes("style.json")) setBasemapFailed(true);
       });
       map.on("load", () => {
-        roadLayersRef.current = addSceneLayers(map!);
+        basemapRef.current = addSceneLayers(map!);
         setMapReady(true);
       });
       const hitAt = (point: { x: number; y: number }) =>
@@ -520,24 +627,27 @@ export function IntersectionEditor() {
         x: number;
         y: number;
       }): BasemapFeature | null => {
-        const layers = ["osm-buildings"].filter((id) => map!.getLayer(id));
+        const layers = ["osm-buildings", "osm-remainder"].filter((id) =>
+          map!.getLayer(id),
+        );
         if (!layers.length) return null;
         const [hit] = map!.queryRenderedFeatures([point.x, point.y], {
           layers,
         });
         if (!hit) return null;
+        const properties = hit.properties ?? {};
         return {
-          id: hit.id,
+          id: hit.layer.id === "osm-remainder" ? properties.osmId : hit.id,
           geometry: hit.geometry,
-          properties: hit.properties ?? {},
-          layer: hit.layer.id === "osm-buildings" ? "building" : "road",
+          properties,
+          layer: hit.layer.type === "fill-extrusion" ? "building" : "road",
         };
       };
 
       const endDrag = () => {
         if (!drag) return;
         if (drag.moved) {
-          historyRef.current = [...historyRef.current.slice(-49), drag.before];
+          remember(drag.before);
           setScene(sceneRef.current);
           // Swallow the click that follows this mouseup, but no later one
           // (there is none when the drag ends outside the map).
@@ -661,9 +771,11 @@ export function IntersectionEditor() {
 
         // Imported roads retain their SUMO identity instead of becoming scenery.
         if (!id) {
-          const layers = ["osm-buildings", NETWORK_LAYER].filter((layer) =>
-            map!.getLayer(layer),
-          );
+          const layers = [
+            "osm-buildings",
+            "osm-remainder",
+            NETWORK_LAYER,
+          ].filter((layer) => map!.getLayer(layer));
           const hit = layers.length
             ? map!.queryRenderedFeatures(e.point, { layers })[0]
             : null;
@@ -676,7 +788,9 @@ export function IntersectionEditor() {
             }
           }
           const feature = basemapAt(e.point);
-          const converted = feature && componentFromBasemap(feature);
+          const converted =
+            feature &&
+            componentFromBasemap(feature, pointerRay(map!, e.lngLat));
           if (converted) {
             commit([...sceneRef.current, converted]);
             id = converted.id;
@@ -705,7 +819,7 @@ export function IntersectionEditor() {
       map?.remove();
       mapRef.current = null;
     };
-  }, [commit, draw, preview, select]);
+  }, [commit, draw, preview, remember, select]);
 
   // Redraw and persist whenever the scene changes.
   useEffect(() => {
@@ -768,14 +882,48 @@ export function IntersectionEditor() {
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    const ids = scene.flatMap((c) => (c.osmId === undefined ? [] : [c.osmId]));
+    const buildings = hiddenBuildings(scene);
+    const buildingIds = [...new Set(buildings.map((b) => b.osmId))];
+    const ids = scene.flatMap((c) =>
+      c.osmId === undefined || c.footprint ? [] : [c.osmId],
+    );
     const notHidden: FilterSpecification = [
       "!",
       ["in", ["id"], ["literal", ids]],
     ];
-    if (map.getLayer("osm-buildings"))
-      map.setFilter("osm-buildings", notHidden);
-    for (const layer of roadLayersRef.current) {
+    const { roads, buildingSource } = basemapRef.current;
+    // One basemap feature can hold hundreds of buildings, so hide the whole
+    // feature and redraw the ones the user has not touched.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const redrawRemainder = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const features =
+          buildingSource && buildingIds.length
+            ? map.querySourceFeatures(buildingSource, {
+                sourceLayer: "building",
+                filter: ["in", ["id"], ["literal", buildingIds]],
+              })
+            : [];
+        map.getSource<GeoJSONSource>("osm-remainder")?.setData({
+          type: "FeatureCollection",
+          features: remainingBuildings(features, buildings),
+        });
+      }, 120);
+    };
+    if (map.getLayer("osm-buildings")) {
+      map.setFilter("osm-buildings", [
+        "!",
+        ["in", ["id"], ["literal", buildingIds]],
+      ]);
+      redrawRemainder();
+    }
+    // Tiles stream in as the camera moves; pick up their buildings too.
+    const onData = (e: { sourceId?: string; tile?: unknown }) => {
+      if (e.sourceId === buildingSource && e.tile) redrawRemainder();
+    };
+    if (buildingIds.length) map.on("sourcedata", onData);
+    for (const layer of roads) {
       const combined = (
         !layer.filter
           ? notHidden
@@ -785,6 +933,10 @@ export function IntersectionEditor() {
       ) as FilterSpecification;
       map.setFilter(layer.id, combined);
     }
+    return () => {
+      clearTimeout(timer);
+      map.off("sourcedata", onData);
+    };
   }, [scene, mapReady]);
 
   // Measurement lines and their labels.
@@ -918,7 +1070,7 @@ export function IntersectionEditor() {
       });
       marker.on("dragend", () => {
         if (before && before !== sceneRef.current) {
-          historyRef.current = [...historyRef.current.slice(-49), before];
+          remember(before);
           setScene(sceneRef.current);
         }
         before = null;
@@ -936,6 +1088,7 @@ export function IntersectionEditor() {
     selectedComponent?.width,
     selectedComponent?.rotation,
     preview,
+    remember,
   ]);
 
   // Guideline check: "!" markers on components that break a rule.
@@ -959,7 +1112,7 @@ export function IntersectionEditor() {
       element.textContent = "!";
       element.title = "Breaks a planning guideline; click for details";
       element.className =
-        "flex size-6 items-center justify-center rounded-full border-2 border-white bg-red-600 text-sm font-black text-white shadow-lg hover:bg-red-700";
+        "flex size-11 items-center justify-center rounded-full border-[3px] border-white bg-red-600 text-2xl font-black text-white shadow-xl ring-4 ring-red-600/30 hover:bg-red-700";
       element.addEventListener("click", (event) => {
         event.stopPropagation();
         const point = map.project(toLngLat([component.x, component.y]));
@@ -968,7 +1121,7 @@ export function IntersectionEditor() {
       });
       markers.set(
         issue.componentId,
-        new lib.Marker({ element, anchor: "bottom", offset: [0, -30] })
+        new lib.Marker({ element, anchor: "bottom", offset: [0, -24] })
           .setLngLat(toLngLat([component.x, component.y]))
           .addTo(map),
       );
@@ -1027,6 +1180,8 @@ export function IntersectionEditor() {
                     y: c.y,
                     rotation: 0,
                     osmId: c.osmId,
+                    footprint: c.footprint,
+                    osmAt: c.osmAt ?? (c.footprint ? [c.x, c.y] : undefined),
                   },
                 ],
         ),
@@ -1059,14 +1214,20 @@ export function IntersectionEditor() {
       const target = menu?.id ?? selected;
       if ((event.key === "Delete" || event.key === "Backspace") && target)
         remove(target);
-      if (event.key.toLowerCase() === "z" && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        undo();
+      const key = event.key.toLowerCase();
+      if (event.ctrlKey || event.metaKey) {
+        if (key === "y" || (key === "z" && event.shiftKey)) {
+          event.preventDefault();
+          redo();
+        } else if (key === "z") {
+          event.preventDefault();
+          undo();
+        }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, selected, remove, undo, select, toggleMeasuring]);
+  }, [menu, selected, remove, undo, redo, select, toggleMeasuring]);
 
   function onDrop(event: React.DragEvent<HTMLDivElement>) {
     const kind = event.dataTransfer.getData(TOOL_MIME) as ComponentKind;
@@ -1083,10 +1244,6 @@ export function IntersectionEditor() {
     ]);
     const [x, y] = toLocal(lng, lat);
     const created = componentFromDrop(kind, x, y);
-    if (typeof created === "string") {
-      setNotice(created);
-      return;
-    }
     const next = [...sceneRef.current, created];
     if (breaksSidewalkRule(next, new Set([created.id]))) {
       setNotice(SIDEWALK_RULE);
@@ -1177,6 +1334,26 @@ export function IntersectionEditor() {
         aria-label="Planning tools"
         className="absolute top-3 right-3 z-10 flex flex-col gap-1.5"
       >
+        <div className="flex gap-1.5">
+          <Button
+            variant="outline"
+            className="flex-1 bg-background shadow-lg dark:bg-background"
+            disabled={!history.undo}
+            title="Undo (Ctrl+Z)"
+            onClick={undo}
+          >
+            ↶ Undo
+          </Button>
+          <Button
+            variant="outline"
+            className="flex-1 bg-background shadow-lg dark:bg-background"
+            disabled={!history.redo}
+            title="Redo (Ctrl+Y)"
+            onClick={redo}
+          >
+            ↷ Redo
+          </Button>
+        </div>
         <Button
           variant={measuring ? "default" : "outline"}
           className="justify-start shadow-lg not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"

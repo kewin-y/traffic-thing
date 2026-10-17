@@ -11,7 +11,7 @@ import {
 // general traffic lane, then painted bike lane, mirrored on both sides.
 export const ROAD_HALF_WIDTH =
   LANE_WIDTHS.streetcar_lane + LANE_WIDTHS.car_lane + LANE_WIDTHS.bike_lane;
-export const SIDEWALK_WIDTH = 4;
+const SIDEWALK_WIDTH = 4;
 /** Distance from the junction centre to the end of each street arm. */
 export const ARM_LENGTH = 110;
 
@@ -79,11 +79,6 @@ export function newId(kind: ComponentKind) {
   return `${kind}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-function insideJunction(x: number, y: number) {
-  const limit = ROAD_HALF_WIDTH + 1;
-  return Math.abs(x) < limit && Math.abs(y) < limit;
-}
-
 /** Whether a point is on one of the sample intersection's four street arms. */
 export function onIntersectionArm(x: number, y: number) {
   const lateral = Math.min(Math.abs(x), Math.abs(y));
@@ -94,60 +89,26 @@ export function onIntersectionArm(x: number, y: number) {
 const FREE_LANE_LENGTH = 30;
 
 /**
- * Build the component for a toolbox drop at local (x, y). On the sample
- * intersection, lanes and crosswalks snap to the street arm under the cursor;
- * anywhere else they are placed freely (rotate or resize them afterwards).
- * Returns an error message instead when the drop does not make sense.
+ * Build the component for a toolbox drop at local (x, y). Linear parts are
+ * placed along the street grid; rotate or resize them afterwards.
  */
 export function componentFromDrop(
   kind: ComponentKind,
   x: number,
   y: number,
-): SceneComponent | string {
+): SceneComponent {
   const base = { ...TOOL_BY_KIND[kind].defaults, id: newId(kind), kind };
-  const northSouth = Math.abs(y) > Math.abs(x);
   const round = (v: number) => Math.round(v * 10) / 10;
-
-  const snaps = onIntersectionArm(x, y);
-  if ((isLane(kind) || kind === "crosswalk") && !snaps) {
-    if (insideJunction(x, y)) return "Drop lanes onto one of the street arms.";
+  if (isLane(kind) || kind === "crosswalk") {
     const length = kind === "crosswalk" ? 10 : FREE_LANE_LENGTH;
     return { ...base, x: round(x), y: round(y), rotation: 0, length };
-  }
-  if (isLane(kind)) {
-    if (insideJunction(x, y)) return "Drop lanes onto one of the street arms.";
-    const span = ARM_LENGTH - ROAD_HALF_WIDTH;
-    const along = (ROAD_HALF_WIDTH + ARM_LENGTH) / 2;
-    return northSouth
-      ? {
-          ...base,
-          x: round(x),
-          y: Math.sign(y) * along,
-          rotation: 90,
-          length: span,
-        }
-      : {
-          ...base,
-          x: Math.sign(x) * along,
-          y: round(y),
-          rotation: 0,
-          length: span,
-        };
-  }
-  if (kind === "crosswalk") {
-    if (insideJunction(x, y)) return "Drop crosswalks across a street arm.";
-    return northSouth
-      ? { ...base, x: 0, y: round(y), rotation: 0 }
-      : { ...base, x: round(x), y: 0, rotation: 90 };
-  }
-  if (kind === "streetcar" || kind === "sidewalk" || kind === "road") {
-    return { ...base, x: round(x), y: round(y), rotation: northSouth ? 90 : 0 };
   }
   return { ...base, x: round(x), y: round(y), rotation: 0 };
 }
 
 // --- Default scene ---------------------------------------------------------
-// Street-level components only; buildings come from the OpenStreetMap basemap.
+// The sample intersection the editor used to open with. No longer shown; kept
+// so scene-storage can recognise and retire it in old saved scenes.
 
 export function defaultScene(): SceneComponent[] {
   const scene: SceneComponent[] = [];
