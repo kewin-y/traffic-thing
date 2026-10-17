@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "next-dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--dir", "app", "exec", "next", "dev", "--port", "3005"],
+      "port": 3005
+    }
+  ]
+}
