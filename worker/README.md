@@ -45,6 +45,55 @@ as that non-root user and honors `PORT` (default 8000), including its healthchec
 For Railway, build with `worker/` as the build context and provide a populated
 volume at `/data/networks`; the image intentionally contains no Toronto data.
 
+### Windows (PowerShell)
+
+Install and start Docker Desktop with the WSL 2 backend and Linux containers.
+No local Python or SUMO installation is needed.
+
+1. Open **PowerShell** in the repository root (the folder containing `compose.yaml`).
+   Paste each command below and press **Enter**:
+
+   ```powershell
+   Copy-Item worker/.env.example .env
+   [guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")
+   notepad .env
+   ```
+
+2. Copy the generated 64-character string into `.env`, replacing the placeholder:
+
+   ```dotenv
+   WORKER_API_KEY=paste-the-generated-string-here
+   ```
+
+   Save and close Notepad. No quotes or spaces are needed. Keep `.env` out of
+   version control; Docker Compose loads it automatically.
+
+3. Paste this block into PowerShell to create a demo scenario and start the worker:
+
+   ```powershell
+   New-Item -ItemType Directory -Force networks/demo | Out-Null
+   docker compose build worker
+   docker compose run --rm --no-deps --volume "${PWD}/networks:/output" worker netgenerate --grid --grid.number 3 --default.lanenumber 2 --output-file /output/demo/network.net.xml
+   @'
+   <routes>
+     <route id="main" edges="A0A1 A1A2 A2B2 B2C2"/>
+     <vehicle id="car-0" route="main" depart="0"/>
+     <vehicle id="car-1" route="main" depart="1"/>
+   </routes>
+   '@ | Set-Content -Encoding ascii networks/demo/demand.rou.xml
+   docker compose up -d worker
+   ```
+
+4. Check <http://localhost:8000/health>. Open <http://localhost:8000/docs>,
+   expand `POST /simulate`, and click **Try it out**. Set Authorization to
+   `Bearer <your generated key>` and use this body, then click **Execute**:
+
+   ```json
+   {"network":"demo","duration_seconds":200,"seed":42,"edits":[]}
+   ```
+
+View logs: `docker compose logs -f worker`. Stop: `docker compose down`.
+
 ## HTTP contract
 
 `GET /health` is unauthenticated. `POST /simulate` requires
