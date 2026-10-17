@@ -26,12 +26,18 @@ bearer = HTTPBearer(auto_error=False)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     key = os.environ.get("WORKER_API_KEY", "")
+
     if not key:
         raise RuntimeError("WORKER_API_KEY must be configured")
+
     timeout = int(os.environ.get("SIMULATION_TIMEOUT_SECONDS", "120"))
     concurrency = int(os.environ.get("MAX_CONCURRENT_SIMULATIONS", "1"))
+
     if timeout <= 0 or concurrency <= 0:
-        raise RuntimeError("Simulation timeout and concurrency must be positive integers")
+        raise RuntimeError(
+            "Simulation timeout and concurrency must be positive integers"
+        )
+
     app.state.api_key = key
     app.state.convex_site_url = os.environ.get("CONVEX_SITE_URL", "").rstrip("/")
     app.state.timeout = timeout
@@ -52,7 +58,9 @@ def authenticate(
     if credentials is None or not secrets.compare_digest(
         credentials.credentials.encode(), request.app.state.api_key.encode()
     ):
-        raise HTTPException(401, "Invalid worker credentials", headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(
+            401, "Invalid worker credentials", headers={"WWW-Authenticate": "Bearer"}
+        )
 
 
 @app.get("/health")
@@ -67,7 +75,10 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
     try:
         network_assets(request.app.state.network_root, payload.network)
     except (OSError, ValueError):
-        raise HTTPException(404, "Network assets not found or outside NETWORK_ROOT") from None
+        raise HTTPException(
+            404, "Network assets not found or outside NETWORK_ROOT"
+        ) from None
+
     if not request.app.state.slots.acquire(blocking=False):
         raise HTTPException(503, "Worker is busy", headers={"Retry-After": "1"})
     timeline_id = uuid.uuid4().hex if payload.record else None
@@ -76,6 +87,7 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
         if timeline_id
         else None
     )
+
     try:
         child_environment = os.environ.copy()
         child_environment.pop("TIMELINE_OUTPUT_PATH", None)
@@ -102,16 +114,23 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
                     pass
                 process.communicate()
                 raise
+
         if process.returncode:
             logger.warning("Simulation failed: %s", stderr[-8000:])
-            raise HTTPException(422, "Simulation failed; check road edits, demand, and worker logs")
+            raise HTTPException(
+                422, "Simulation failed; check road edits, demand, and worker logs"
+            )
+
         try:
             result = json.loads(stdout)
             if not isinstance(result, dict):
                 raise TypeError("Expected a JSON object from runner")
         except (ValueError, TypeError):
             logger.error("Invalid runner output: %s", stdout[-2000:])
-            raise HTTPException(500, "Simulation runner returned an invalid result") from None
+            raise HTTPException(
+                500, "Simulation runner returned an invalid result"
+            ) from None
+
         if timeline_id and timeline_path:
             if not timeline_path.is_file():
                 logger.error("Recorded simulation did not produce a timeline")
@@ -133,12 +152,17 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
                 "sample_interval_seconds": payload.sample_interval_seconds,
             }
         return result
+
     except subprocess.TimeoutExpired:
-        raise HTTPException(504, "Simulation exceeded its execution time limit") from None
+        raise HTTPException(
+            504, "Simulation exceeded its execution time limit"
+        ) from None
     finally:
         if timeline_path:
             timeline_path.unlink(missing_ok=True)
-            timeline_path.with_name(f"{timeline_path.name}.partial").unlink(missing_ok=True)
+            timeline_path.with_name(f"{timeline_path.name}.partial").unlink(
+                missing_ok=True
+            )
         request.app.state.slots.release()
 
 

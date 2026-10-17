@@ -20,6 +20,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]
+import = ["pyproj>=3.7,<4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

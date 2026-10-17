@@ -98,6 +98,54 @@ Check <http://localhost:8000/health>. To run a simulation, open
 
 View logs: `docker compose logs -f worker`. Stop: `docker compose down`.
 
+## Toronto downtown import
+
+Import real OpenStreetMap roads around the CN Tower, Rogers Centre, Union Station,
+the Entertainment District, and the waterfront. From the repository root:
+
+```bash
+bash scripts/import-toronto.sh
+```
+
+```powershell
+.\scripts\import-toronto.ps1
+```
+
+The scripts build a separate Docker importer image; no host Python or API key is
+required. The test rectangle is `[-79.405, 43.635, -79.370, 43.660]` in
+`[west, south, east, north]` order. The simulation includes a 750 m buffer and
+keeps complete edges crossing that boundary.
+
+Files are written to `networks/toronto-downtown/`:
+
+| File | Purpose |
+| --- | --- |
+| `network.net.xml` | Passenger-car SUMO network, using the largest connected component |
+| `demand.rou.xml` | Synthetic routes for one hour, seed 42, targeting one vehicle every two seconds |
+| `edges.geojson` | WGS84 road geometry with SUMO edge IDs for map selection and edit requests |
+| `manifest.json` | Bounds, projection, network version, checksums, attribution, and demand settings |
+| `source.osm.xml` | The OSM snapshot used to build this network |
+
+Traffic demand is synthetic, not measured Toronto traffic. Imported road
+attributes and signal programs need review before using results for planning.
+The importer validates route loading with SUMO before publishing the files.
+
+The downloaded snapshot is cached under `networks/.cache/`. Use `--force` to
+regenerate from it, or `--force --refresh` to download current OSM data. In
+PowerShell, use `-Force` and `-Refresh`. A failed generation preserves the previous
+import. Generated files are ignored by Git.
+
+Build and start the worker with `docker compose up -d --build worker`, then send
+this body to its authenticated `POST /simulate` endpoint:
+
+```json
+{"network":"toronto-downtown","duration_seconds":200,"seed":42,"edits":[]}
+```
+
+Use `properties.edge_id` from `edges.geojson` when adding edits. Both the map
+geometry and simulation network come from the same import. OSM attribution is
+recorded in the GeoJSON and manifest; display it when rendering the roads.
+
 ## HTTP contract
 
 `GET /health` is unauthenticated. `POST /simulate` requires

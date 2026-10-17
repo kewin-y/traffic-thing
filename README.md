@@ -6,7 +6,8 @@ A traffic planning app for editing road scenarios and comparing SUMO simulations
 
 - [`app/`](app/README.md) — Next.js frontend, Convex backend, and authentication.
 - [`worker/`](worker/README.md) — uv-managed Python/SUMO HTTP service.
-- [`scripts/`](scripts/) — Bash and PowerShell scripts to create demo network assets.
+- [`scripts/`](scripts/) — Bash and PowerShell scripts to create demo assets or
+  [import Toronto downtown roads](worker/README.md#toronto-downtown-import).
 - [`compose.yaml`](compose.yaml) — local container configuration for the worker.
 - `networks/` — local SUMO network and demand files; ignored by Git and mounted
   read-only into the worker.
