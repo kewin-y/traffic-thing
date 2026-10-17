@@ -26,6 +26,8 @@ if (runOnceWorkflow && config.SETUP_SCRIPT_RAN !== undefined) {
 
 const result = spawnSync("npx", ["@convex-dev/auth", "--skip-git-check"], {
   stdio: "inherit",
+  // npx is npx.cmd on Windows, which can only be launched through a shell.
+  shell: process.platform === "win32",
 });
 
 if (runOnceWorkflow) {
