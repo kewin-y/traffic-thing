@@ -12,8 +12,8 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from traffic_worker.assets import network_assets
@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI):
     if timeout <= 0 or concurrency <= 0:
         raise RuntimeError("Simulation timeout and concurrency must be positive integers")
     app.state.api_key = key
+    app.state.convex_site_url = os.environ.get("CONVEX_SITE_URL", "").rstrip("/")
     app.state.timeout = timeout
     app.state.slots = threading.BoundedSemaphore(concurrency)
     app.state.network_root = Path(os.environ.get("NETWORK_ROOT", "/data/networks"))
@@ -61,6 +62,8 @@ def health() -> dict[str, str]:
 
 @app.post("/simulate", dependencies=[Depends(authenticate)])
 def simulate(payload: SimulationRequest, request: Request) -> dict:
+    if payload.record and not request.app.state.convex_site_url:
+        raise HTTPException(503, "Recording uploads require CONVEX_SITE_URL")
     try:
         network_assets(request.app.state.network_root, payload.network)
     except (OSError, ValueError):
@@ -73,7 +76,6 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
         if timeline_id
         else None
     )
-    timeline_ready = False
     try:
         child_environment = os.environ.copy()
         child_environment.pop("TIMELINE_OUTPUT_PATH", None)
@@ -114,37 +116,53 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
             if not timeline_path.is_file():
                 logger.error("Recorded simulation did not produce a timeline")
                 raise HTTPException(500, "Simulation runner did not produce a timeline")
+            try:
+                storage_id = upload_timeline(
+                    timeline_path,
+                    request.app.state.convex_site_url,
+                    request.app.state.api_key,
+                )
+            except (httpx.HTTPError, ValueError, TypeError, KeyError):
+                # HTTP errors can contain the signed upload URL; do not log it.
+                logger.warning("Recording upload to Convex failed")
+                raise HTTPException(502, "Recording upload to Convex failed") from None
             result["timeline"] = {
-                "id": timeline_id,
-                "url": f"/timelines/{timeline_id}",
+                "storage_id": storage_id,
                 "format": "application/gzip",
                 "filename": "timeline.json.gz",
                 "sample_interval_seconds": payload.sample_interval_seconds,
             }
-            timeline_ready = True
         return result
     except subprocess.TimeoutExpired:
         raise HTTPException(504, "Simulation exceeded its execution time limit") from None
     finally:
-        if timeline_path and not timeline_ready:
+        if timeline_path:
             timeline_path.unlink(missing_ok=True)
             timeline_path.with_name(f"{timeline_path.name}.partial").unlink(missing_ok=True)
         request.app.state.slots.release()
 
 
-@app.get("/timelines/{timeline_id}", dependencies=[Depends(authenticate)])
-def get_timeline(timeline_id: str, request: Request) -> FileResponse:
-    try:
-        parsed_id = uuid.UUID(hex=timeline_id)
-    except ValueError:
-        raise HTTPException(404, "Timeline not found") from None
-    if parsed_id.hex != timeline_id:
-        raise HTTPException(404, "Timeline not found")
-    path = request.app.state.timeline_root / f"{timeline_id}.json.gz"
-    if not path.is_file():
-        raise HTTPException(404, "Timeline not found")
-    return FileResponse(
-        path,
-        media_type="application/gzip",
-        filename="timeline.json.gz",
-    )
+def upload_timeline(path: Path, convex_site_url: str, api_key: str) -> str:
+    with httpx.Client(timeout=120) as client:
+        response = client.post(
+            f"{convex_site_url}/networks/upload-url",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        response.raise_for_status()
+        upload_url = response.json()["uploadUrl"]
+        if not isinstance(upload_url, str) or not upload_url:
+            raise ValueError("Convex returned an invalid upload URL")
+        with path.open("rb") as recording:
+            response = client.post(
+                upload_url,
+                content=recording,
+                headers={
+                    "Content-Type": "application/gzip",
+                    "Content-Length": str(path.stat().st_size),
+                },
+            )
+        response.raise_for_status()
+        storage_id = response.json()["storageId"]
+        if not isinstance(storage_id, str) or not storage_id:
+            raise ValueError("Convex returned an invalid storage ID")
+        return storage_id

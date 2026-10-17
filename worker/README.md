@@ -145,8 +145,46 @@ simulation horizon, not all future demand. Metrics exclude people/containers;
 gridlock teleporting is disabled. Use identical network, demand, horizon, and seed
 when comparing a baseline with a scenario.
 
+### Recordings in Convex
+
+Set `CONVEX_SITE_URL` in the worker environment to your deployment's HTTP actions
+URL (for example `https://your-deployment.convex.site`). Configure the same
+`WORKER_API_KEY` secret on that Convex deployment:
+
+```bash
+cd app
+npx convex env set WORKER_API_KEY '<same-key-as-worker>'
+```
+
+Add `"record": true` to a simulation request to record a compressed JSON timeline.
+`sample_interval_seconds` defaults to 5 (allowed range: 1–60). After simulation,
+the worker calls `POST /networks/upload-url` with
+`Authorization: Bearer <WORKER_API_KEY>` to obtain `{ "uploadUrl": "..." }`, then
+streams `timeline.json.gz` to that URL as `application/gzip`. The upload URL
+authorizes that upload; the worker does not forward its API key to it.
+
+The simulation response includes:
+
+```json
+{
+  "timeline": {
+    "storage_id": "<Convex _storage ID>",
+    "format": "application/gzip",
+    "filename": "timeline.json.gz",
+    "sample_interval_seconds": 5
+  }
+}
+```
+
+Local recording files are deleted after each request, including failed uploads.
+The worker no longer serves `/timelines/{id}`. Keep `storage_id` with the
+simulation result; backend playback code can resolve it with
+`ctx.storage.getUrl(storageId)`. Recording requests return 503 if
+`CONVEX_SITE_URL` is missing, or 502 if obtaining the upload URL or uploading fails.
+Requests without recording do not need a Convex connection.
+
 Requests are synchronous; no job is persisted. Convex job dispatch, durable
-statuses, recovery, and playback artifacts are not connected yet. The default
+statuses, recovery, and playback are not connected yet. The default
 wall-clock limit is 120 seconds (`SIMULATION_TIMEOUT_SECONDS`); timeout returns
 504 and terminates the simulation process group. Capacity defaults to one run per
 server process (`MAX_CONCURRENT_SIMULATIONS`); excess requests get 503 rather than
