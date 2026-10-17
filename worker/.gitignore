@@ -1,0 +1,24 @@
+# Python environments and bytecode
+.venv/
+__pycache__/
+*.py[cod]
+
+# Tool caches and coverage output
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local secrets; keep the configuration example
+.env
+.env.*
+!.env.example

@@ -1,0 +1,14 @@
+# Local development environment and network data
+/.direnv/
+/networks/
+/.env
+/.env.*
+!/.env.example
+/.envrc.local
+
+# OS and editor artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~

@@ -1,0 +1,24 @@
+[project]
+name = "traffic-worker"
+version = "0.1.0"
+description = "Isolated SUMO simulation worker for traffic scenarios"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "eclipse-sumo==1.28.0",
+  "sumolib==1.28.0",
+  "traci==1.28.0",
+  "libsumo==1.28.0",
+  "fastapi>=0.115,<1",
+  "pydantic>=2.10,<3",
+  "uvicorn>=0.34,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["httpx>=0.28,<1", "pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
