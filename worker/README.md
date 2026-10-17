@@ -1,33 +1,9 @@
 # SUMO worker
 
-This directory contains the uv-managed Python 3.12 simulation HTTP service.
-It uses SUMO, `sumolib`, `traci`, and `libsumo` 1.28.0. Each request runs in an
-isolated subprocess; network edits and simulation outputs use temporary files.
-Mounted source networks are never modified.
-
-## Local development
-
-From the repository root, create a small synthetic network and fixed demand:
-
-```bash
-cd worker
-uv sync --locked
-mkdir -p ../networks/demo
-uv run netgenerate --grid --grid.number 3 --default.lanenumber 2 \
-  --output-file ../networks/demo/network.net.xml
-uv run python -c 'from pathlib import Path; Path("../networks/demo/demand.rou.xml").write_text("""<routes>
-  <route id="main" edges="A0A1 A1A2 A2B2 B2C2"/>
-  <vehicle id="car-0" route="main" depart="0"/>
-  <vehicle id="car-1" route="main" depart="1"/>
-</routes>""")'
-export WORKER_API_KEY="$(uv run python -c 'import secrets; print(secrets.token_hex(32))')"
-export NETWORK_ROOT="$(realpath ../networks)"
-uv run uvicorn traffic_worker.api:app --host 127.0.0.1 --port 8000
-```
-
-On Linux/Nix, enter the [repository devshell](../README.md#development-environment)
-first: its shared libraries are needed by the native Python wheels. `uv` provisions
-Python. Docker supplies these native libraries independently and does not require Nix.
+Run this simulation HTTP service **only through Docker**, including development.
+The image provides Python 3.12, SUMO, `sumolib`, `traci`, and `libsumo` 1.28.0;
+no host Python, uv, SUMO, or Nix installation is needed. Each request runs in an
+isolated subprocess. Mounted source networks are never modified.
 
 ## Editor scenarios
 
@@ -64,17 +40,32 @@ are not modelled.
 
 ## Docker
 
-After creating `networks/demo` as above, run from the repository root with
-`WORKER_API_KEY` exported in the same shell:
+Run commands from the repository root. Copy `worker/.env.example` to `.env`,
+replace `WORKER_API_KEY` with a long random secret, and keep the file out of
+version control. Compose loads `.env` automatically; no shell exports are needed.
+
+Create a demo network and demand using the script for your shell (it builds the
+worker image and runs SUMO inside Docker):
 
 ```bash
-docker compose up --build
+bash scripts/create-demo-network.sh
 ```
 
-Alternatively, copy `worker/.env.example` to `worker/.env`, replace the example
-secret, and use `docker compose --env-file worker/.env up --build`. Network assets
-are mounted read-only and must be readable by container UID 10001. The image runs
-as that non-root user and honors `PORT` (default 8000), including its healthcheck.
+```powershell
+.\scripts\create-demo-network.ps1
+```
+
+Both refuse to overwrite `networks/demo`; use `--force` (Bash) or `-Force`
+(PowerShell) to regenerate it. Alternatively, supply your own
+`networks/<name>/network.net.xml` and `demand.rou.xml`. Then start the worker:
+
+```bash
+docker compose up -d --build worker
+```
+
+Network assets are mounted read-only and must be readable by container UID 10001.
+The image runs as that non-root user and honors `PORT` (default 8000), including
+its healthcheck.
 For Railway, build with `worker/` as the build context and provide a populated
 volume at `/data/networks`; the image intentionally contains no Toronto data.
 
@@ -101,19 +92,10 @@ No local Python or SUMO installation is needed.
    Save and close Notepad. No quotes or spaces are needed. Keep `.env` out of
    version control; Docker Compose loads it automatically.
 
-3. Paste this block into PowerShell to create a demo scenario and start the worker:
+3. Create the demo scenario and start the worker:
 
    ```powershell
-   New-Item -ItemType Directory -Force networks/demo | Out-Null
-   docker compose build worker
-   docker compose run --rm --no-deps --volume "${PWD}/networks:/output" worker netgenerate --grid --grid.number 3 --default.lanenumber 2 --output-file /output/demo/network.net.xml
-   @'
-   <routes>
-     <route id="main" edges="A0A1 A1A2 A2B2 B2C2"/>
-     <vehicle id="car-0" route="main" depart="0"/>
-     <vehicle id="car-1" route="main" depart="1"/>
-   </routes>
-   '@ | Set-Content -Encoding ascii networks/demo/demand.rou.xml
+   .\scripts\create-demo-network.ps1
    docker compose up -d worker
    ```
 
@@ -131,11 +113,11 @@ View logs: `docker compose logs -f worker`. Stop: `docker compose down`.
 
 `GET /health` is unauthenticated. `POST /simulate` requires
 `Authorization: Bearer <WORKER_API_KEY>`. Interactive schemas are at `/docs`.
-For example, using the same exported key in another terminal:
+For example, replace `<your-key>` with the `WORKER_API_KEY` from `.env`:
 
 ```bash
 curl --fail-with-body http://localhost:8000/simulate \
-  -H "Authorization: Bearer $WORKER_API_KEY" \
+  -H 'Authorization: Bearer <your-key>' \
   -H 'Content-Type: application/json' \
   -d '{"network":"demo","duration_seconds":200,"seed":42,"edits":[
     {"type":"set_speed_limit","edge_id":"A0A1","speed_mps":5.0},
@@ -171,5 +153,3 @@ server process (`MAX_CONCURRENT_SIMULATIONS`); excess requests get 503 rather th
 an in-memory queue. Invalid requests or failed simulations return 422; missing
 assets return 404. Run one Uvicorn process per container so its concurrency limit
 corresponds to the container's capacity.
-
-From `worker/`, run boundary regressions with `uv run --locked pytest`.
