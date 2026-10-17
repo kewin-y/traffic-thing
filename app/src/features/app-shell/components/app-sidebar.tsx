@@ -1,12 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useSyncExternalStore } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Activity01Icon,
   DashboardSquare01Icon,
   Folder01Icon,
+  MapsEditingIcon,
 } from "@hugeicons/core-free-icons";
 import { Brand } from "@/components/brand";
 import { brandName } from "@/lib/branding";
@@ -27,6 +29,7 @@ import {
 
 const navigation = [
   { label: "Dashboard", href: "/dashboard", icon: DashboardSquare01Icon },
+  { label: "Intersection editor", href: "/dashboard/editor", icon: MapsEditingIcon },
   { label: "Projects", href: "/dashboard#projects", icon: Folder01Icon },
   { label: "Activity", href: "/dashboard#activity", icon: Activity01Icon },
 ];
@@ -50,8 +53,10 @@ function getServerHash() {
 export function AppSidebar() {
   const { setOpenMobile } = useSidebar();
   const hash = useSyncExternalStore(subscribeToHash, getHash, getServerHash);
+  const pathname = usePathname();
   const activeHref =
     navigation.find(({ href }) => href.endsWith(hash) && hash !== "")?.href ??
+    navigation.find(({ href }) => href === pathname)?.href ??
     "/dashboard";
   return (
     <Sidebar collapsible="icon" variant="inset" aria-label="Workspace sidebar">

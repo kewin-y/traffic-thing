@@ -29,6 +29,39 @@ On Linux/Nix, enter the [repository devshell](../README.md#development-environme
 first: its shared libraries are needed by the native Python wheels. `uv` provisions
 Python. Docker supplies these native libraries independently and does not require Nix.
 
+## Editor scenarios
+
+The app's intersection editor exports a `scenario.json` that describes a four-arm
+junction: the lanes on each arm, the speed limits, the junction control, and the demand.
+`traffic_worker.scenario` builds a SUMO network from it and runs it locally. No
+`NETWORK_ROOT`, API key or server is needed:
+
+```bash
+uv run python -m traffic_worker.scenario path/to/scenario.json
+uv run python -m traffic_worker.scenario path/to/scenario.json --gui   # watch in sumo-gui
+uv run python -m traffic_worker.scenario path/to/scenario.json --json --keep out/
+```
+
+How the scene maps to SUMO:
+
+- Each lane becomes a SUMO lane, kerb side first: bike lanes allow `bicycle`, car
+  lanes allow `passenger` (and `bicycle` when that edge has no bike lane), and
+  streetcar tracks allow `tram`.
+- The speed sign standing on an arm sets that arm's limit (default 40 km/h).
+- Any traffic signal makes the junction signalized. Otherwise any stop sign makes it
+  all-way stop, and with neither it is uncontrolled priority.
+- Demand per arm splits 60% straight, 25% right and 15% left. Streetcars only run
+  straight through. Flows with no lanes for their mode are skipped and listed.
+
+The report gives completed trips, throughput, trips still en route, demand
+**queued at entry** (the insertion backlog, which is the clearest congestion signal),
+and average trip, waiting and delay times per mode, plus speed and waiting time per
+approach. Teleporting is off, but `--ignore-junction-blocker 10` lets a vehicle move
+past a deadlocked foe inside the junction, such as opposing left-turning cyclists.
+Without it, permissive left turns gridlock. Buildings, trees, benches and sidewalks
+are carried in the scenario, but they do not affect the simulation yet, and pedestrians
+are not modelled.
+
 ## Docker
 
 After creating `networks/demo` as above, run from the repository root with

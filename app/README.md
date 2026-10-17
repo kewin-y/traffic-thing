@@ -13,6 +13,7 @@ the [worker README](../worker/README.md) for SUMO simulation setup and its HTTP 
 - Tailwind CSS 4, shadcn/ui (Base UI), Hugeicons
 - TanStack Form + Zod
 - `@wrksz/themes` (light/dark/system themes)
+- MapLibre GL JS (3D intersection editor in `src/features/intersection-editor/`)
 
 ## Project structure
 

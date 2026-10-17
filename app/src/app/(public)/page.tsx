@@ -1,7 +1,13 @@
-import { isAuthenticatedNextjs } from "@convex-dev/auth/nextjs/server";
-import { LandingPage } from "@/features/landing/components/landing-page";
+import type { Metadata } from "next";
+import { EditorLoader } from "@/features/intersection-editor/components/editor-loader";
 
-export default async function HomePage() {
-  const authenticated = await isAuthenticatedNextjs();
-  return <LandingPage authenticated={authenticated} />;
+export const metadata: Metadata = { title: "Intersection editor" };
+
+// The prototype opens straight into the 3D editor; no sign-in needed.
+export default function HomePage() {
+  return (
+    <main className="h-svh p-3">
+      <EditorLoader />
+    </main>
+  );
 }
