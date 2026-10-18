@@ -8,6 +8,6 @@ export const EditorLoader = dynamic(
   () => import("./intersection-editor").then((mod) => mod.IntersectionEditor),
   {
     ssr: false,
-    loading: () => <Skeleton className="h-full min-h-[560px] rounded-xl" />,
+    loading: () => <Skeleton className="h-full min-h-0" />,
   },
 );

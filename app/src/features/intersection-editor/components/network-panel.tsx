@@ -11,6 +11,7 @@ interface Props {
   onClearSelection: () => void;
   /** Pixels taken by the open side panel on the right, or null if closed. */
   panelInset: number | null;
+  leftInset?: number;
 }
 
 export function NetworkPanel({
@@ -18,14 +19,15 @@ export function NetworkPanel({
   selectedRoad,
   onClearSelection,
   panelInset,
+  leftInset = 12,
 }: Props) {
   return (
     <>
       <div
         role="status"
         aria-live="polite"
-        style={{ right: panelInset ?? 144 }}
-        className="absolute top-3 left-48 z-10 mx-auto max-w-sm rounded-lg border bg-background/95 px-3 py-2 text-xs shadow-lg backdrop-blur"
+        style={{ right: panelInset ?? 144, left: leftInset }}
+        className="absolute top-3 z-10 mx-auto max-w-sm rounded-lg border bg-background/95 px-3 py-2 text-xs shadow-lg backdrop-blur"
       >
         <p className="font-semibold">Toronto downtown roads</p>
         <p className="mt-1 text-muted-foreground">

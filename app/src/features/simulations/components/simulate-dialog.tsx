@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
 import { z } from "zod";
@@ -39,13 +39,16 @@ export function SimulateDialog({
   saved,
   hasNetwork,
   active,
+  onQueued,
 }: {
   projectId: Id<"projects">;
   autosave: ProjectAutosave;
   saved: boolean;
   hasNetwork: boolean;
   active: boolean;
+  onQueued?: (runId: Id<"simulationRuns">) => void;
 }) {
+  const reasonId = useId();
   const config = useQuery(api.simulations.queries.configuration);
   const start = useMutation(api.simulations.mutations.start);
   const [open, setOpen] = useState(false);
@@ -66,7 +69,7 @@ export function SimulateDialog({
       }
       token.current ??= crypto.randomUUID();
       try {
-        await start({
+        const runId = await start({
           projectId,
           requestId: token.current,
           expectedRevision: autosave.getRevision(),
@@ -77,6 +80,7 @@ export function SimulateDialog({
           }),
         });
         setOpen(false);
+        onQueued?.(runId);
       } catch (err) {
         setError(
           err instanceof ConvexError && typeof err.data === "string"
@@ -94,7 +98,7 @@ export function SimulateDialog({
         ? "A simulation is already active."
         : config?.message;
   return (
-    <div className="flex flex-col items-end gap-1">
+    <div className="flex flex-col items-end gap-1" title={reason ?? undefined}>
       <Dialog
         open={open}
         onOpenChange={(next) => {
@@ -111,10 +115,14 @@ export function SimulateDialog({
           render={
             <Button
               disabled={!saved || !hasNetwork || active || !config?.ready}
+              aria-describedby={reason ? reasonId : undefined}
             />
           }
         >
-          Simulate
+          <span aria-hidden className="text-[10px]">
+            ▶
+          </span>{" "}
+          Run simulation
         </DialogTrigger>
         <DialogContent>
           <DialogTitle>Run baseline simulation</DialogTitle>
@@ -194,7 +202,7 @@ export function SimulateDialog({
         </DialogContent>
       </Dialog>
       {reason && (
-        <p className="max-w-xs text-right text-xs text-muted-foreground">
+        <p id={reasonId} className="sr-only">
           {reason}
         </p>
       )}

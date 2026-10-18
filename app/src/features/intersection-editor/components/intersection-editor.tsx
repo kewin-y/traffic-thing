@@ -1,6 +1,7 @@
 "use client";
 
 import "maplibre-gl/dist/maplibre-gl.css";
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ExpressionSpecification,
@@ -430,10 +431,16 @@ export function IntersectionEditor({
   initialState,
   networkReference,
   onStateChange,
+  historyToolbar,
+  componentsTarget,
+  leftPanelInset = 12,
 }: {
   initialState: ProjectState;
   networkReference: { name: string; version: string } | null;
   onStateChange: (state: ProjectState) => void;
+  historyToolbar?: HTMLElement | null;
+  componentsTarget?: HTMLElement | null;
+  leftPanelInset?: number;
 }) {
   const [scene, setScene] = useState<SceneComponent[]>(initialState.scene);
   const [areas, setAreas] = useState<EditArea[]>(initialState.areas);
@@ -442,10 +449,11 @@ export function IntersectionEditor({
 
   const [selectingArea, setSelectingArea] = useState(false);
   const [controlsReady, setControlsReady] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(
+    () => window.matchMedia("(min-width: 1024px)").matches,
+  );
   const [panelTab, setPanelTab] = useState<PanelTab>("tools");
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT_WIDTH);
-  const [toolboxOpen, setToolboxOpen] = useState(true);
   const [snip, setSnip] = useState<{
     x0: number;
     y0: number;
@@ -564,6 +572,15 @@ export function IntersectionEditor({
   );
   const undo = useCallback(() => travel("undo"), [travel]);
   const redo = useCallback(() => travel("redo"), [travel]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const map = mapRef.current;
+    if (!mapReady || !container || !map) return;
+    const observer = new ResizeObserver(() => map.resize());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [mapReady]);
 
   const select = useCallback((id: string | null) => {
     setRoadSelection(null);
@@ -1806,7 +1823,7 @@ export function IntersectionEditor({
 
   return (
     <div
-      className="relative h-full min-h-[560px] overflow-clip rounded-xl border bg-muted"
+      className="relative h-full min-h-0 overflow-clip bg-muted"
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes(TOOL_MIME)) {
           event.preventDefault();
@@ -1924,70 +1941,50 @@ export function IntersectionEditor({
         </div>
       )}
 
-      {!toolboxOpen && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="absolute top-3 left-3 z-10 bg-background shadow-lg dark:bg-background"
-          onClick={() => setToolboxOpen(true)}
-        >
-          ＋ Add Components
-        </Button>
-      )}
-      <aside
-        data-toolbox
-        aria-label="Component tools"
-        hidden={!toolboxOpen}
-        className="absolute top-3 left-3 z-10 max-h-[calc(100%-5rem)] w-[150px] overflow-y-auto rounded-lg border bg-background/95 p-1.5 shadow-lg backdrop-blur"
-      >
-        <div className="flex items-center justify-between pb-1 pl-1">
-          <p className="text-xs font-semibold">Add Components</p>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Close Add Components"
-            title="Close"
-            className="size-6"
-            onClick={() => setToolboxOpen(false)}
-          >
-            ×
-          </Button>
-        </div>
-        {groups.map((group) => (
-          <div key={group} className="pb-1.5">
-            <p className="px-1 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-              {group}
+      {componentsTarget &&
+        createPortal(
+          <div className="p-3">
+            <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
+              Drag a component onto an editable area of the map.
             </p>
-            <div className="grid grid-cols-3 gap-0.5">
-              {TOOLS.filter((tool) => tool.group === group).map((tool) => (
-                <div
-                  key={tool.kind}
-                  draggable
-                  title={`${tool.label}: ${tool.hint}`}
-                  onDragStart={(event) => {
-                    event.dataTransfer.setData(TOOL_MIME, tool.kind);
-                    event.dataTransfer.effectAllowed = "copy";
-                    const icon = event.currentTarget.querySelector("svg");
-                    if (icon) event.dataTransfer.setDragImage(icon, 14, 14);
-                    setDraggingTool(tool.kind);
-                    setMenu(null);
-                  }}
-                  onDragEnd={() => setDraggingTool(null)}
-                  className="flex cursor-grab flex-col items-center gap-0.5 rounded-md border border-transparent p-1 text-center transition hover:border-border hover:bg-muted active:cursor-grabbing"
-                >
-                  <ToolIcon kind={tool.kind} className="size-6" />
-                  <span className="text-[8.5px] leading-tight">
-                    {tool.label}
-                  </span>
+            {groups.map((group) => (
+              <div key={group} className="pb-5">
+                <p className="px-1 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                  {group}
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {TOOLS.filter((tool) => tool.group === group).map((tool) => (
+                    <div
+                      key={tool.kind}
+                      draggable
+                      title={`${tool.label}: ${tool.hint}`}
+                      onDragStart={(event) => {
+                        event.dataTransfer.setData(TOOL_MIME, tool.kind);
+                        event.dataTransfer.effectAllowed = "copy";
+                        const icon = event.currentTarget.querySelector("svg");
+                        if (icon) event.dataTransfer.setDragImage(icon, 14, 14);
+                        setDraggingTool(tool.kind);
+                        setMenu(null);
+                      }}
+                      onDragEnd={() => setDraggingTool(null)}
+                      className="flex cursor-grab flex-col items-center gap-0.5 rounded-md border border-transparent p-1 text-center transition hover:border-border hover:bg-muted active:cursor-grabbing"
+                    >
+                      <ToolIcon kind={tool.kind} className="size-7" />
+                      <span className="text-[11px] leading-tight">
+                        {tool.label}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </aside>
+              </div>
+            ))}
+          </div>,
+          componentsTarget,
+        )}
 
       <NetworkPanel
         network={network}
+        leftInset={leftPanelInset}
         selectedRoad={selectedRoad}
         onClearSelection={() => setRoadSelection(null)}
         panelInset={panelOpen ? panelWidth + 12 : null}
@@ -2165,6 +2162,30 @@ export function IntersectionEditor({
         </div>
       )}
 
+      {historyToolbar &&
+        createPortal(
+          <>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!history.undo}
+              onClick={undo}
+              title="Undo (Ctrl+Z)"
+            >
+              Undo
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!history.redo}
+              onClick={redo}
+              title="Redo (Ctrl+Y)"
+            >
+              Redo
+            </Button>
+          </>,
+          historyToolbar,
+        )}
       {viewControls}
 
       {basemapFailed && !mapReady && (
