@@ -52,13 +52,17 @@ export interface Issue {
 
 const FURNITURE: ComponentKind[] = ["bench", "transit_shelter"];
 const STREET_OBJECTS: ComponentKind[] = [
-  "tree",
   "bench",
   "transit_shelter",
   "streetlight",
   "stop_sign",
+  "yield_sign",
   "speed_sign",
   "traffic_light",
+  "no_left_turn",
+  "no_right_turn",
+  "no_u_turn",
+  "no_straight_on",
 ];
 // Signals closer than this are treated as the same intersection.
 const SAME_INTERSECTION_M = 40;
@@ -141,14 +145,15 @@ export function checkScene(scene: SceneComponent[]): Issue[] {
     }
   }
 
-  // Stop signs belong at unsignalized intersections only.
+  // Stop and yield signs belong at unsignalized intersections only.
   const signals = ofKind("traffic_light");
-  for (const sign of ofKind("stop_sign")) {
+  for (const sign of ofKind("stop_sign", "yield_sign")) {
     if (signals.some((s) => centreDistance(sign, s) < SAME_INTERSECTION_M)) {
+      const name = sign.kind === "stop_sign" ? "Stop" : "Yield";
       add(
         sign,
         "stopSigns",
-        "Stop signs assign right-of-way where there are no traffic signals; this one is at a signalized intersection.",
+        `${name} signs assign right-of-way where there are no traffic signals; this one is at a signalized intersection.`,
       );
     }
   }
@@ -192,22 +197,10 @@ export function checkScene(scene: SceneComponent[]): Issue[] {
     }
   }
 
-  // Clearances around street furniture, trees and crossings.
-  const trees = ofKind("tree");
+  // Clearances around street furniture and crossings.
   const lights = ofKind("streetlight");
   const crossings = ofKind("crosswalk");
   for (const item of ofKind(...FURNITURE)) {
-    const tree = trees.find(
-      (t) => (gapBetween(item, t)?.distance ?? Infinity) < 1.0,
-    );
-    if (tree) {
-      add(
-        item,
-        "separation",
-        "Street furniture needs 1.0 m of clearance from street trees; move it further from the tree.",
-      );
-      continue;
-    }
     const light = lights.find(
       (l) => (gapBetween(item, l)?.distance ?? Infinity) < 0.6,
     );
@@ -219,7 +212,7 @@ export function checkScene(scene: SceneComponent[]): Issue[] {
       );
     }
   }
-  for (const item of ofKind(...FURNITURE, "tree", "streetlight")) {
+  for (const item of ofKind(...FURNITURE, "streetlight")) {
     const crossing = crossings.find(
       (x) => (gapBetween(item, x)?.distance ?? Infinity) < 3.0,
     );

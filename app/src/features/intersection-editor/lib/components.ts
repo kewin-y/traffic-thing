@@ -2,6 +2,10 @@ import { place, polygon, rect, type Vec2 } from "./geometry";
 
 export type LaneKind = "car_lane" | "bike_lane" | "streetcar_lane";
 
+/** Regulatory turn-prohibition signs, as tagged in OpenStreetMap. */
+export type TurnBanKind =
+  "no_left_turn" | "no_right_turn" | "no_u_turn" | "no_straight_on";
+
 export type ComponentKind =
   | LaneKind
   | "road"
@@ -9,11 +13,14 @@ export type ComponentKind =
   | "intersection"
   | "crosswalk"
   | "building"
-  | "tree"
+  | "green_area"
   | "bench"
   | "traffic_light"
   | "stop_sign"
+  | "yield_sign"
   | "speed_sign"
+  | "speed_hump"
+  | TurnBanKind
   | "transit_shelter"
   | "streetlight"
   | "streetcar"
@@ -34,6 +41,8 @@ export interface SceneComponent {
   width?: number;
   height?: number;
   speedKmh?: number;
+  /** When a timed sign applies, in OpenStreetMap opening-hours syntax. */
+  hours?: string;
   colour?: string;
   /** Building outline from OpenStreetMap, relative to (x, y). */
   footprint?: Vec2[];
@@ -41,6 +50,11 @@ export interface SceneComponent {
   path?: Vec2[];
   /** Source feature id when the component was converted from the basemap. */
   osmId?: string | number;
+  /**
+   * Where a converted building first stood. Basemap features can merge many
+   * buildings, so this (with the footprint) picks out the one to hide.
+   */
+  osmAt?: Vec2;
 }
 
 /** A single extruded or flat polygon that makes up part of a component. */
@@ -168,11 +182,53 @@ export const TOOLS: ToolDefinition[] = [
     defaults: {},
   },
   {
+    kind: "yield_sign",
+    label: "Yield sign",
+    group: "Signals & signs",
+    hint: "Drivers give way to cross traffic",
+    defaults: {},
+  },
+  {
     kind: "speed_sign",
     label: "Speed limit",
     group: "Signals & signs",
     hint: "Sets the limit for the arm it stands on",
     defaults: { speedKmh: 40 },
+  },
+  {
+    kind: "speed_hump",
+    label: "Speed hump",
+    group: "Signals & signs",
+    hint: "Traffic calming across a street; drag its ends to fit",
+    defaults: { length: 7, width: 3.7 },
+  },
+  {
+    kind: "no_left_turn",
+    label: "No left turn",
+    group: "Signals & signs",
+    hint: "Prohibits left turns from this approach",
+    defaults: {},
+  },
+  {
+    kind: "no_right_turn",
+    label: "No right turn",
+    group: "Signals & signs",
+    hint: "Prohibits right turns from this approach",
+    defaults: {},
+  },
+  {
+    kind: "no_u_turn",
+    label: "No U-turn",
+    group: "Signals & signs",
+    hint: "Prohibits U-turns from this approach",
+    defaults: {},
+  },
+  {
+    kind: "no_straight_on",
+    label: "No straight",
+    group: "Signals & signs",
+    hint: "Traffic must turn; no through movement",
+    defaults: {},
   },
   {
     kind: "streetlight",
@@ -182,11 +238,11 @@ export const TOOLS: ToolDefinition[] = [
     defaults: {},
   },
   {
-    kind: "tree",
-    label: "Tree",
+    kind: "green_area",
+    label: "Green area",
     group: "Streetscape",
-    hint: "Street tree",
-    defaults: {},
+    hint: "Grass or planting strip; drag its edges to resize",
+    defaults: { length: 12, width: 4 },
   },
   {
     kind: "bench",
@@ -241,9 +297,6 @@ export const COLOURS = {
   paint: "#f4f1e8",
   rail: "#25272b",
   concrete: "#cdc7bb",
-  trunk: "#7a5534",
-  leaf: "#4f9a45",
-  leafLight: "#6bb35a",
   wood: "#a8743f",
   metal: "#3a3d42",
   signalHead: "#1f2124",
@@ -254,6 +307,9 @@ export const COLOURS = {
   ttcRed: "#d6281f",
   window: "#2b3540",
   centreLine: "#f2c230",
+  grass: "#7cb862",
+  hump: "#6c7079",
+  white: "#ffffff",
   lamp: "#fff3b0",
 };
 
@@ -426,24 +482,22 @@ function localParts(c: SceneComponent): Part[] {
         box(length / 4, width / 5, 3, 2.5, height + 0.6, height + 2, "#9aa0a6"),
       ];
     }
-    case "tree":
+    case "green_area":
       return [
-        box(0, 0, 0.4, 0.4, 0, 3, COLOURS.trunk),
         {
-          ring: polygon(0, 0, 2.3, 8, Math.PI / 8),
-          layer: "solid",
-          base: 2.6,
-          height: 6.4,
-          colour: COLOURS.leaf,
-        },
-        {
-          ring: polygon(0.2, 0.2, 1.5, 8),
-          layer: "solid",
-          base: 6.4,
-          height: 7.8,
-          colour: COLOURS.leafLight,
+          ring: rect(0, 0, length, width),
+          layer: "ground",
+          colour: COLOURS.grass,
         },
       ];
+    case "speed_hump": {
+      // A low raised strip with white chevron bars across it.
+      const parts: Part[] = [box(0, 0, length, width, 0, 0.08, COLOURS.hump)];
+      for (let x = -length / 2 + 0.9; x <= length / 2 - 0.6; x += 1.5) {
+        parts.push(box(x, 0, 0.35, width * 0.6, 0.08, 0.09, COLOURS.white));
+      }
+      return parts;
+    }
     case "bench":
       return [
         box(-0.75, 0, 0.12, 0.45, 0, 0.42, COLOURS.metal),
@@ -466,6 +520,22 @@ function localParts(c: SceneComponent): Part[] {
       return [
         box(0, 0, 0.08, 0.08, 0, 2.2, COLOURS.metal),
         box(0, -0.06, 0.75, 0.05, 2.2, 2.95, COLOURS.red),
+      ];
+    case "yield_sign":
+      return [
+        box(0, 0, 0.08, 0.08, 0, 2.2, COLOURS.metal),
+        box(0, -0.06, 0.8, 0.05, 2.45, 2.95, COLOURS.red),
+        box(0, -0.09, 0.5, 0.03, 2.55, 2.85, COLOURS.white),
+        box(0, -0.06, 0.3, 0.05, 2.2, 2.45, COLOURS.red),
+      ];
+    case "no_left_turn":
+    case "no_right_turn":
+    case "no_u_turn":
+    case "no_straight_on":
+      return [
+        box(0, 0, 0.08, 0.08, 0, 2.2, COLOURS.metal),
+        box(0, -0.06, 0.6, 0.05, 2.2, 2.8, COLOURS.white),
+        box(0, -0.09, 0.5, 0.03, 2.45, 2.55, COLOURS.red),
       ];
     case "speed_sign":
       return [
@@ -531,11 +601,15 @@ function pathRects(path: Vec2[], width: number): Vec2[][] {
 
 // Plan-view size used for clearance and measurement of small objects.
 const POINT_SIZES: Partial<Record<ComponentKind, [number, number]>> = {
-  tree: [1, 1],
   bench: [1.8, 0.5],
   traffic_light: [0.3, 0.3],
   stop_sign: [0.2, 0.2],
+  yield_sign: [0.2, 0.2],
   speed_sign: [0.2, 0.2],
+  no_left_turn: [0.2, 0.2],
+  no_right_turn: [0.2, 0.2],
+  no_u_turn: [0.2, 0.2],
+  no_straight_on: [0.2, 0.2],
   streetlight: [0.3, 0.3],
   transit_shelter: [4.3, 1.8],
 };

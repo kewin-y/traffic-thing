@@ -4,6 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ExpressionSpecification,
+  FillExtrusionLayerSpecification,
   FilterSpecification,
   GeoJSONSource,
   Map as MapLibreMap,
@@ -12,6 +13,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import {
   isResizable,
+  outlines,
   ROADWAY_KINDS,
   TOOL_BY_KIND,
   TOOLS,
@@ -26,7 +28,13 @@ import {
   type Vec2,
 } from "../lib/geometry";
 import { BUILDING_COLOUR, themeBasemap } from "../lib/basemap-theme";
-import { componentFromBasemap, type BasemapFeature } from "../lib/osm";
+import {
+  componentFromBasemap,
+  remainingBuildings,
+  type BasemapFeature,
+  type HiddenBuilding,
+  type PointerRay,
+} from "../lib/osm";
 import { renderScene, type SceneLayers } from "../lib/render";
 import { checkScene, SOURCES, type Issue } from "../lib/rules";
 import { componentFromDrop, describe } from "../lib/scene";
@@ -37,6 +45,28 @@ import {
   type LoadedNetwork,
 } from "../lib/network";
 import { loadEditorScene, SCENE_STORAGE_KEY } from "../lib/scene-storage";
+import {
+  addArea,
+  dominantBearing,
+  EDIT_AREAS_STORAGE_KEY,
+  fitEdges,
+  holeMask,
+  isEditable,
+  loadEditAreas,
+  unionPath,
+  type EditArea,
+} from "../lib/edit-areas";
+import {
+  addControlLayers,
+  bearingNear,
+  componentFromControl,
+  CONTROL_ICONS_LAYER,
+  describeControl,
+  hideControls,
+  loadControls,
+  SPEED_LIMITS_LAYER,
+  type ControlProperties,
+} from "../lib/traffic-controls";
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
 import { componentsOverlap, gapBetween } from "../lib/spatial";
 import { ComponentMenu } from "./component-menu";
@@ -50,6 +80,29 @@ const HIGHLIGHT = "#ffc94d";
 const MEASURE_COLOUR = "#e8338b";
 const GROW_MS = 380;
 const SIDEWALK_RULE = "Sidewalks can't overlap roads or lanes.";
+const READ_ONLY =
+  "This part of the map is greyed out. Use Select area to make it editable.";
+const AREA_COLOUR = "#2f80ed";
+/** Kinds that run along streets; a selection edge may cut them freely. */
+const UNSNAPPED_KINDS: readonly ComponentKind[] = [
+  ...ROADWAY_KINDS,
+  "crosswalk",
+  "streetcar",
+  "removed_osm",
+];
+/** OpenMapTiles road classes that define a street grid's direction. */
+const STREET_CLASSES = [
+  "motorway",
+  "trunk",
+  "primary",
+  "secondary",
+  "tertiary",
+  "minor",
+];
+/** Smallest selection, in screen pixels, that counts as an area. */
+const MIN_SNIP = 12;
+/** Farthest a selection corner may land from the camera's centre, in metres. */
+const MAX_SNIP_REACH = 4000;
 
 // Downtown Toronto: Bathurst St to the Don Valley, the waterfront to Bloor St.
 const DOWNTOWN_BOUNDS: [[number, number], [number, number]] = [
@@ -72,12 +125,26 @@ interface RoadLayer {
   filter: FilterSpecification | undefined;
 }
 
+interface BasemapLayers {
+  roads: RoadLayer[];
+  /** Vector source holding the basemap buildings, if the style has any. */
+  buildingSource: string | null;
+}
+
+const BUILDING_PAINT: FillExtrusionLayerSpecification["paint"] = {
+  "fill-extrusion-color": BUILDING_COLOUR,
+  "fill-extrusion-vertical-gradient": true,
+  "fill-extrusion-height": ["coalesce", ["get", "render_height"], 10],
+  "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
+  "fill-extrusion-opacity": 1,
+};
+
 /**
  * Add the editable scene on top of the basemap: road-level parts above the
  * basemap's roads but under its labels, plus 3D extrusions for OSM buildings.
- * Returns the basemap road layers so converted roads can be hidden there.
+ * Returns the basemap layers that converted features are hidden from.
  */
-function addSceneLayers(map: MapLibreMap): RoadLayer[] {
+function addSceneLayers(map: MapLibreMap): BasemapLayers {
   themeBasemap(map);
   const layers = map.getStyle().layers;
   const firstLabel = layers.find((layer) => layer.type === "symbol")?.id;
@@ -97,13 +164,19 @@ function addSceneLayers(map: MapLibreMap): RoadLayer[] {
         source: buildings.source,
         "source-layer": "building",
         minzoom: 14,
-        paint: {
-          "fill-extrusion-color": BUILDING_COLOUR,
-          "fill-extrusion-vertical-gradient": true,
-          "fill-extrusion-height": ["coalesce", ["get", "render_height"], 10],
-          "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
-          "fill-extrusion-opacity": 1,
-        },
+        paint: BUILDING_PAINT,
+      },
+      firstLabel,
+    );
+    // Buildings that share a basemap feature with a converted one.
+    map.addSource("osm-remainder", { type: "geojson", data: EMPTY });
+    map.addLayer(
+      {
+        id: "osm-remainder",
+        type: "fill-extrusion",
+        source: "osm-remainder",
+        minzoom: 14,
+        paint: BUILDING_PAINT,
       },
       firstLabel,
     );
@@ -173,7 +246,25 @@ function addSceneLayers(map: MapLibreMap): RoadLayer[] {
     intensity: 0.32,
     position: [1.4, 200, 35],
   });
-  return roadLayers;
+  return {
+    roads: roadLayers,
+    buildingSource:
+      buildings && "source" in buildings ? buildings.source : null,
+  };
+}
+
+/** Basemap buildings the scene has converted or deleted. */
+function hiddenBuildings(scene: SceneComponent[]): HiddenBuilding[] {
+  return scene.flatMap((c) => {
+    if (c.osmId === undefined || !c.footprint) return [];
+    const [ox, oy] = c.osmAt ?? [c.x, c.y];
+    return [
+      {
+        osmId: c.osmId,
+        outline: c.footprint.map(([x, y]): Vec2 => [ox + x, oy + y]),
+      },
+    ];
+  });
 }
 
 function load<T>(key: string, fallback: () => T): T {
@@ -243,6 +334,37 @@ function breaksSidewalkRule(next: SceneComponent[], changed: Set<string>) {
         componentsOverlap(s, r, 0.05),
     ),
   );
+}
+
+/** The pointer's ray into the scene, from the camera through `ground`. */
+function pointerRay(
+  map: MapLibreMap,
+  ground: { lng: number; lat: number },
+): PointerRay {
+  const center = map.getCenter();
+  const fov = (map.getVerticalFieldOfView() * Math.PI) / 180;
+  const pitch = (map.getPitch() * Math.PI) / 180;
+  const bearing = (map.getBearing() * Math.PI) / 180;
+  const cosLat = Math.cos((center.lat * Math.PI) / 180);
+  // Camera distance to the map centre, in screen pixels and then metres.
+  const pixels = (0.5 / Math.tan(fov / 2)) * map.getContainer().clientHeight;
+  const metres =
+    pixels * ((40_075_016.686 * cosLat) / (512 * 2 ** map.getZoom()));
+  const back = metres * Math.sin(pitch);
+  return {
+    ground: toLocal(ground.lng, ground.lat),
+    camera: toLocal(
+      center.lng - (back * Math.sin(bearing)) / (111_320 * cosLat),
+      center.lat - (back * Math.cos(bearing)) / 111_320,
+    ),
+    altitude: Math.max(1, metres * Math.cos(pitch)),
+  };
+}
+
+/** One undo step: the scene and the editable areas together. */
+interface Snapshot {
+  scene: SceneComponent[];
+  areas: EditArea[];
 }
 
 interface MenuState {
@@ -317,6 +439,15 @@ function resized(
 
 export function IntersectionEditor() {
   const [scene, setScene] = useState<SceneComponent[]>(loadEditorScene);
+  const [areas, setAreas] = useState<EditArea[]>(loadEditAreas);
+  const [selectingArea, setSelectingArea] = useState(false);
+  const [controlsReady, setControlsReady] = useState(false);
+  const [snip, setSnip] = useState<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null>(null);
   const network = useRoadNetwork();
   const [roadSelection, setRoadSelection] = useState<{
     networkId: string;
@@ -344,32 +475,87 @@ export function IntersectionEditor() {
   const networkRef = useRef<LoadedNetwork | null>(null);
   const libRef = useRef<typeof import("maplibre-gl") | null>(null);
   const sceneRef = useRef(scene);
-  const historyRef = useRef<SceneComponent[][]>([]);
+  const areasRef = useRef(areas);
+  const greyRef = useRef<HTMLDivElement>(null);
+  const outlineRef = useRef<SVGPathElement>(null);
+  const outlineMaskRef = useRef<SVGPathElement>(null);
+  const historyRef = useRef<Snapshot[]>([]);
+  const futureRef = useRef<Snapshot[]>([]);
+  const [history, setHistory] = useState({ undo: 0, redo: 0 });
   const growingRef = useRef(new Map<string, number>());
   const markersRef = useRef(new Map<string, Marker>());
   const handlesRef = useRef(new Map<Handle, Marker>());
   const issueMarkersRef = useRef(new Map<string, Marker>());
   const measureLabelsRef = useRef(new Map<string, Marker>());
   const measurementsRef = useRef(measurements);
-  const roadLayersRef = useRef<RoadLayer[]>([]);
+  const basemapRef = useRef<BasemapLayers>({ roads: [], buildingSource: null });
   const frameRef = useRef<number | null>(null);
   const selectedRef = useRef<string | null>(null);
   const measuringRef = useRef(false);
   const measureStartRef = useRef<string | null>(null);
 
-  const commit = useCallback((next: SceneComponent[]) => {
-    historyRef.current = [...historyRef.current.slice(-49), sceneRef.current];
-    sceneRef.current = next;
-    setScene(next);
-  }, []);
+  const syncHistory = useCallback(
+    () =>
+      setHistory({
+        undo: historyRef.current.length,
+        redo: futureRef.current.length,
+      }),
+    [],
+  );
 
-  const undo = useCallback(() => {
-    const previous = historyRef.current.pop();
-    if (!previous) return;
-    sceneRef.current = previous;
-    setScene(previous);
-    setMenu(null);
-  }, []);
+  /** Record `before` as an undo step; a new edit discards anything to redo. */
+  const remember = useCallback(
+    (before: SceneComponent[], areasBefore: EditArea[] = areasRef.current) => {
+      historyRef.current = [
+        ...historyRef.current.slice(-49),
+        { scene: before, areas: areasBefore },
+      ];
+      futureRef.current = [];
+      syncHistory();
+    },
+    [syncHistory],
+  );
+
+  const commit = useCallback(
+    (next: SceneComponent[]) => {
+      remember(sceneRef.current);
+      sceneRef.current = next;
+      setScene(next);
+    },
+    [remember],
+  );
+
+  const commitAreas = useCallback(
+    (next: EditArea[]) => {
+      remember(sceneRef.current, areasRef.current);
+      areasRef.current = next;
+      setAreas(next);
+    },
+    [remember],
+  );
+
+  /** Step through history: undo moves back, redo moves forward again. */
+  const travel = useCallback(
+    (direction: "undo" | "redo") => {
+      const [from, to] =
+        direction === "undo"
+          ? [historyRef, futureRef]
+          : [futureRef, historyRef];
+      const target = from.current.pop();
+      if (!target) return;
+      to.current.push({ scene: sceneRef.current, areas: areasRef.current });
+      sceneRef.current = target.scene;
+      areasRef.current = target.areas;
+      setScene(target.scene);
+      setAreas(target.areas);
+      setMenu(null);
+      setIssuePopup(null);
+      syncHistory();
+    },
+    [syncHistory],
+  );
+  const undo = useCallback(() => travel("undo"), [travel]);
+  const redo = useCallback(() => travel("redo"), [travel]);
 
   const select = useCallback((id: string | null) => {
     setRoadSelection(null);
@@ -441,13 +627,19 @@ export function IntersectionEditor() {
     [drawMeasurements],
   );
 
-  /** Apply a live (uncommitted) change during a drag, unless it breaks the sidewalk rule. */
+  /**
+   * Apply a live (uncommitted) change during a drag. Returns why the change
+   * was refused, or null when it was applied.
+   */
   const preview = useCallback(
-    (component: SceneComponent): boolean => {
+    (component: SceneComponent): string | null => {
+      if (!isEditable(areasRef.current, [component.x, component.y]))
+        return READ_ONLY;
       const next = sceneRef.current.map((c) =>
         c.id === component.id ? component : c,
       );
-      if (breaksSidewalkRule(next, new Set([component.id]))) return false;
+      if (breaksSidewalkRule(next, new Set([component.id])))
+        return SIDEWALK_RULE;
       sceneRef.current = next;
       markersRef.current
         .get(component.id)
@@ -456,10 +648,36 @@ export function IntersectionEditor() {
         marker.setLngLat(toLngLat(handlePosition(component, handle)));
       }
       if (frameRef.current === null) draw();
-      return true;
+      return null;
     },
     [draw],
   );
+
+  /**
+   * Cut the editable areas out of the grey overlay and outline them, following
+   * the camera. Overlapping areas merge: only the outer edge is outlined.
+   */
+  const drawGrey = useCallback(() => {
+    const map = mapRef.current;
+    const grey = greyRef.current;
+    if (!map || !grey) return;
+    const holes = areasRef.current.flatMap((area) =>
+      area.rings.map((ring) =>
+        ring.map((p) => {
+          const { x, y } = map.project(toLngLat(p));
+          return [x, y] as const;
+        }),
+      ),
+    );
+    const mask = holes.length
+      ? holeMask(grey.clientWidth, grey.clientHeight, holes)
+      : "none";
+    grey.style.maskImage = mask;
+    grey.style.webkitMaskImage = mask;
+    const path = unionPath(holes);
+    outlineRef.current?.setAttribute("d", path);
+    outlineMaskRef.current?.setAttribute("d", path);
+  }, []);
 
   // Create the map once.
   useEffect(() => {
@@ -507,37 +725,47 @@ export function IntersectionEditor() {
         if (url.includes("style.json")) setBasemapFailed(true);
       });
       map.on("load", () => {
-        roadLayersRef.current = addSceneLayers(map!);
+        basemapRef.current = addSceneLayers(map!);
         setMapReady(true);
       });
+      map.on("render", drawGrey);
       const hitAt = (point: { x: number; y: number }) =>
         map!.queryRenderedFeatures([point.x, point.y], {
           layers: [...LAYER_IDS],
         })[0]?.properties?.cid as string | undefined;
+
+      /** Whether the component with this id sits in an editable area. */
+      const editableId = (id: string | undefined) => {
+        const found = sceneRef.current.find((c) => c.id === id);
+        return !!found && isEditable(areasRef.current, [found.x, found.y]);
+      };
 
       /** Basemap buildings remain visual components; roads use the SUMO layer. */
       const basemapAt = (point: {
         x: number;
         y: number;
       }): BasemapFeature | null => {
-        const layers = ["osm-buildings"].filter((id) => map!.getLayer(id));
+        const layers = ["osm-buildings", "osm-remainder"].filter((id) =>
+          map!.getLayer(id),
+        );
         if (!layers.length) return null;
         const [hit] = map!.queryRenderedFeatures([point.x, point.y], {
           layers,
         });
         if (!hit) return null;
+        const properties = hit.properties ?? {};
         return {
-          id: hit.id,
+          id: hit.layer.id === "osm-remainder" ? properties.osmId : hit.id,
           geometry: hit.geometry,
-          properties: hit.properties ?? {},
-          layer: hit.layer.id === "osm-buildings" ? "building" : "road",
+          properties,
+          layer: hit.layer.type === "fill-extrusion" ? "building" : "road",
         };
       };
 
       const endDrag = () => {
         if (!drag) return;
         if (drag.moved) {
-          historyRef.current = [...historyRef.current.slice(-49), drag.before];
+          remember(drag.before);
           setScene(sceneRef.current);
           // Swallow the click that follows this mouseup, but no later one
           // (there is none when the drag ends outside the map).
@@ -599,11 +827,12 @@ export function IntersectionEditor() {
           x: round(drag.origin[0] + x - drag.grab[0]),
           y: round(drag.origin[1] + y - drag.grab[1]),
         };
-        if (preview(moved)) {
+        const problem = preview(moved);
+        if (!problem) {
           drag.moved = true;
         } else if (!drag.blocked) {
           drag.blocked = true;
-          setNotice(SIDEWALK_RULE);
+          setNotice(problem);
         }
       });
 
@@ -620,7 +849,11 @@ export function IntersectionEditor() {
           return;
         }
         const id = hitAt(e.point);
-        setMenu(id ? menuAt(e.target, id, e.point.x, e.point.y) : null);
+        const editable = editableId(id);
+        if (id && !editable) setNotice(READ_ONLY);
+        setMenu(
+          id && editable ? menuAt(e.target, id, e.point.x, e.point.y) : null,
+        );
       });
       map.on("click", (e) => {
         setMenu(null);
@@ -659,11 +892,53 @@ export function IntersectionEditor() {
           return;
         }
 
+        // Real-world signals and signs: inside an editable area, make one
+        // editable; elsewhere, say what it is.
+        if (!id) {
+          const controlLayers = [
+            CONTROL_ICONS_LAYER,
+            SPEED_LIMITS_LAYER,
+          ].filter((layer) => map!.getLayer(layer));
+          const control = controlLayers.length
+            ? map!.queryRenderedFeatures(e.point, { layers: controlLayers })[0]
+            : undefined;
+          if (control) {
+            const props = control.properties as ControlProperties;
+            const at =
+              control.geometry.type === "Point"
+                ? {
+                    lng: control.geometry.coordinates[0],
+                    lat: control.geometry.coordinates[1],
+                  }
+                : e.lngLat;
+            const along =
+              control.geometry.type === "LineString"
+                ? bearingNear(control.geometry.coordinates, e.lngLat)
+                : undefined;
+            const created = componentFromControl(props, at, along);
+            if (!isEditable(areasRef.current, [created.x, created.y])) {
+              select(null);
+              setNotice(
+                `${describeControl(props)}, from OpenStreetMap. Select this area to edit it.`,
+              );
+              return;
+            }
+            commit([...sceneRef.current, created]);
+            select(created.id);
+            setNotice(
+              `${describeControl(props)} is now editable. Drag it, or right-click for options.`,
+            );
+            return;
+          }
+        }
+
         // Imported roads retain their SUMO identity instead of becoming scenery.
         if (!id) {
-          const layers = ["osm-buildings", NETWORK_LAYER].filter((layer) =>
-            map!.getLayer(layer),
-          );
+          const layers = [
+            "osm-buildings",
+            "osm-remainder",
+            NETWORK_LAYER,
+          ].filter((layer) => map!.getLayer(layer));
           const hit = layers.length
             ? map!.queryRenderedFeatures(e.point, { layers })[0]
             : null;
@@ -676,7 +951,17 @@ export function IntersectionEditor() {
             }
           }
           const feature = basemapAt(e.point);
-          const converted = feature && componentFromBasemap(feature);
+          const converted =
+            feature &&
+            componentFromBasemap(feature, pointerRay(map!, e.lngLat));
+          if (
+            converted &&
+            !isEditable(areasRef.current, [converted.x, converted.y])
+          ) {
+            select(null);
+            setNotice(READ_ONLY);
+            return;
+          }
           if (converted) {
             commit([...sceneRef.current, converted]);
             id = converted.id;
@@ -686,6 +971,11 @@ export function IntersectionEditor() {
             select(id);
             return;
           }
+        }
+        if (id && !editableId(id)) {
+          select(null);
+          setNotice(READ_ONLY);
+          return;
         }
         select(id);
         if (id)
@@ -705,7 +995,47 @@ export function IntersectionEditor() {
       map?.remove();
       mapRef.current = null;
     };
-  }, [commit, draw, preview, select]);
+  }, [commit, draw, drawGrey, preview, remember, select]);
+
+  // Real-world traffic controls, as a reference layer under the scene.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const controller = new AbortController();
+    loadControls(controller.signal).then(
+      (data) => {
+        if (controller.signal.aborted || mapRef.current !== map) return;
+        addControlLayers(map, data);
+        setControlsReady(true);
+      },
+      () => {
+        if (!controller.signal.aborted)
+          setNotice("Toronto signals and signs could not be loaded.");
+      },
+    );
+    return () => controller.abort();
+  }, [mapReady]);
+
+  // Hide real-world controls that were made editable or deleted.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!controlsReady || !map) return;
+    hideControls(
+      map,
+      scene.flatMap((c) =>
+        typeof c.osmId === "string" && /^(node|relation)\//.test(c.osmId)
+          ? [c.osmId]
+          : [],
+      ),
+    );
+  }, [scene, controlsReady]);
+
+  // Outline, unmask and persist the editable areas whenever they change.
+  useEffect(() => {
+    areasRef.current = areas;
+    save(EDIT_AREAS_STORAGE_KEY, areas);
+    drawGrey();
+  }, [areas, mapReady, drawGrey]);
 
   // Redraw and persist whenever the scene changes.
   useEffect(() => {
@@ -768,14 +1098,48 @@ export function IntersectionEditor() {
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    const ids = scene.flatMap((c) => (c.osmId === undefined ? [] : [c.osmId]));
+    const buildings = hiddenBuildings(scene);
+    const buildingIds = [...new Set(buildings.map((b) => b.osmId))];
+    const ids = scene.flatMap((c) =>
+      c.osmId === undefined || c.footprint ? [] : [c.osmId],
+    );
     const notHidden: FilterSpecification = [
       "!",
       ["in", ["id"], ["literal", ids]],
     ];
-    if (map.getLayer("osm-buildings"))
-      map.setFilter("osm-buildings", notHidden);
-    for (const layer of roadLayersRef.current) {
+    const { roads, buildingSource } = basemapRef.current;
+    // One basemap feature can hold hundreds of buildings, so hide the whole
+    // feature and redraw the ones the user has not touched.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const redrawRemainder = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const features =
+          buildingSource && buildingIds.length
+            ? map.querySourceFeatures(buildingSource, {
+                sourceLayer: "building",
+                filter: ["in", ["id"], ["literal", buildingIds]],
+              })
+            : [];
+        map.getSource<GeoJSONSource>("osm-remainder")?.setData({
+          type: "FeatureCollection",
+          features: remainingBuildings(features, buildings),
+        });
+      }, 120);
+    };
+    if (map.getLayer("osm-buildings")) {
+      map.setFilter("osm-buildings", [
+        "!",
+        ["in", ["id"], ["literal", buildingIds]],
+      ]);
+      redrawRemainder();
+    }
+    // Tiles stream in as the camera moves; pick up their buildings too.
+    const onData = (e: { sourceId?: string; tile?: unknown }) => {
+      if (e.sourceId === buildingSource && e.tile) redrawRemainder();
+    };
+    if (buildingIds.length) map.on("sourcedata", onData);
+    for (const layer of roads) {
       const combined = (
         !layer.filter
           ? notHidden
@@ -785,6 +1149,10 @@ export function IntersectionEditor() {
       ) as FilterSpecification;
       map.setFilter(layer.id, combined);
     }
+    return () => {
+      clearTimeout(timer);
+      map.off("sourcedata", onData);
+    };
   }, [scene, mapReady]);
 
   // Measurement lines and their labels.
@@ -853,6 +1221,14 @@ export function IntersectionEditor() {
         element.addEventListener("contextmenu", (event) => {
           event.preventDefault();
           event.stopPropagation();
+          const current = sceneRef.current.find((c) => c.id === sign.id);
+          if (
+            !current ||
+            !isEditable(areasRef.current, [current.x, current.y])
+          ) {
+            setNotice(READ_ONLY);
+            return;
+          }
           const point = map.project(marker!.getLngLat());
           setMenu(menuAt(map, sign.id, point.x, point.y));
         });
@@ -909,8 +1285,9 @@ export function IntersectionEditor() {
         if (!current) return;
         const { lng, lat } = marker.getLngLat();
         const next = resized(current, handle, toLocal(lng, lat));
-        if (!preview(next)) {
-          setNotice(SIDEWALK_RULE);
+        const problem = preview(next);
+        if (problem) {
+          setNotice(problem);
           marker.setLngLat(toLngLat(handlePosition(current, handle)));
           return;
         }
@@ -918,7 +1295,7 @@ export function IntersectionEditor() {
       });
       marker.on("dragend", () => {
         if (before && before !== sceneRef.current) {
-          historyRef.current = [...historyRef.current.slice(-49), before];
+          remember(before);
           setScene(sceneRef.current);
         }
         before = null;
@@ -936,6 +1313,7 @@ export function IntersectionEditor() {
     selectedComponent?.width,
     selectedComponent?.rotation,
     preview,
+    remember,
   ]);
 
   // Guideline check: "!" markers on components that break a rule.
@@ -959,16 +1337,17 @@ export function IntersectionEditor() {
       element.textContent = "!";
       element.title = "Breaks a planning guideline; click for details";
       element.className =
-        "flex size-6 items-center justify-center rounded-full border-2 border-white bg-red-600 text-sm font-black text-white shadow-lg hover:bg-red-700";
+        "flex size-11 items-center justify-center rounded-full border-[3px] border-white bg-red-600 text-2xl font-black text-white shadow-xl ring-4 ring-red-600/30 hover:bg-red-700";
       element.addEventListener("click", (event) => {
         event.stopPropagation();
         const point = map.project(toLngLat([component.x, component.y]));
         setIssuePopup({ issue, x: point.x, y: point.y });
-        select(component.id);
+        if (isEditable(areasRef.current, [component.x, component.y]))
+          select(component.id);
       });
       markers.set(
         issue.componentId,
-        new lib.Marker({ element, anchor: "bottom", offset: [0, -30] })
+        new lib.Marker({ element, anchor: "bottom", offset: [0, -24] })
           .setLngLat(toLngLat([component.x, component.y]))
           .addTo(map),
       );
@@ -1027,6 +1406,8 @@ export function IntersectionEditor() {
                     y: c.y,
                     rotation: 0,
                     osmId: c.osmId,
+                    footprint: c.footprint,
+                    osmAt: c.osmAt ?? (c.footprint ? [c.x, c.y] : undefined),
                   },
                 ],
         ),
@@ -1055,18 +1436,201 @@ export function IntersectionEditor() {
         setIssuePopup(null);
         select(null);
         if (measuringRef.current) toggleMeasuring();
+        setSelectingArea(false);
+        setSnip(null);
       }
       const target = menu?.id ?? selected;
       if ((event.key === "Delete" || event.key === "Backspace") && target)
         remove(target);
-      if (event.key.toLowerCase() === "z" && (event.ctrlKey || event.metaKey)) {
-        event.preventDefault();
-        undo();
+      const key = event.key.toLowerCase();
+      if (event.ctrlKey || event.metaKey) {
+        if (key === "y" || (key === "z" && event.shiftKey)) {
+          event.preventDefault();
+          redo();
+        } else if (key === "z") {
+          event.preventDefault();
+          undo();
+        }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, selected, remove, undo, select, toggleMeasuring]);
+  }, [menu, selected, remove, undo, redo, select, toggleMeasuring]);
+
+  /** Look straight down on everything editable, or on downtown if nothing is. */
+  function birdsEye() {
+    const map = mapRef.current;
+    const points = areasRef.current.flatMap((area) =>
+      area.rings.flatMap((ring) => ring.map(toLngLat)),
+    );
+    if (!map) return;
+    if (!points.length) {
+      // Nothing to frame yet: look straight down on downtown.
+      map.easeTo({
+        center: [
+          (DOWNTOWN_BOUNDS[0][0] + DOWNTOWN_BOUNDS[1][0]) / 2,
+          (DOWNTOWN_BOUNDS[0][1] + DOWNTOWN_BOUNDS[1][1]) / 2,
+        ],
+        zoom: 15,
+        pitch: 0,
+        bearing: GRID_BEARING,
+        duration: 900,
+      });
+      return;
+    }
+    const lngs = points.map((p) => p[0]);
+    const lats = points.map((p) => p[1]);
+    map.fitBounds(
+      [
+        [Math.min(...lngs), Math.min(...lats)],
+        [Math.max(...lngs), Math.max(...lats)],
+      ],
+      {
+        padding: { top: 70, right: 120, bottom: 70, left: 200 },
+        pitch: 0,
+        bearing: streetBearing(map) ?? GRID_BEARING,
+        maxZoom: 19,
+        duration: 900,
+      },
+    );
+  }
+
+  /** The bearing that runs the streets in the editable areas straight up. */
+  function streetBearing(map: MapLibreMap): number | null {
+    const source = basemapRef.current.buildingSource;
+    if (!source) return null;
+    const streets = map.querySourceFeatures(source, {
+      sourceLayer: "transportation",
+      filter: ["in", ["get", "class"], ["literal", STREET_CLASSES]],
+    });
+    const segments: number[][][] = [];
+    for (const street of streets) {
+      const geometry = street.geometry;
+      const lines =
+        geometry.type === "LineString"
+          ? [geometry.coordinates]
+          : geometry.type === "MultiLineString"
+            ? geometry.coordinates
+            : [];
+      for (const line of lines) {
+        for (let i = 1; i < line.length; i++) {
+          const a = toLocal(line[i - 1][0], line[i - 1][1]);
+          const b = toLocal(line[i][0], line[i][1]);
+          const middle: Vec2 = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+          if (isEditable(areasRef.current, middle))
+            segments.push([line[i - 1], line[i]]);
+        }
+      }
+    }
+    return dominantBearing(segments);
+  }
+
+  function finishSnip() {
+    const map = mapRef.current;
+    const box = snip;
+    setSnip(null);
+    setSelectingArea(false);
+    if (!map || !box) return;
+    const left = Math.min(box.x0, box.x1);
+    const right = Math.max(box.x0, box.x1);
+    const top = Math.min(box.y0, box.y1);
+    const bottom = Math.max(box.y0, box.y1);
+    if (right - left < MIN_SNIP || bottom - top < MIN_SNIP) {
+      setNotice("Drag out a larger area to make it editable.");
+      return;
+    }
+    const centre = map.getCenter();
+    const [cx, cy] = toLocal(centre.lng, centre.lat);
+    const round = (v: number) => Math.round(v * 10) / 10;
+    const ring = (
+      [
+        [left, top],
+        [right, top],
+        [right, bottom],
+        [left, bottom],
+      ] as const
+    ).map(([x, y]): Vec2 => {
+      const { lng, lat } = map.unproject([x, y]);
+      const [lx, ly] = toLocal(lng, lat);
+      return [round(lx), round(ly)];
+    });
+    // Corners near or above the horizon land absurdly far away.
+    if (
+      ring.some(
+        ([x, y]) =>
+          !Number.isFinite(x) || Math.hypot(x - cx, y - cy) > MAX_SNIP_REACH,
+      )
+    ) {
+      setNotice("Keep the selection below the horizon.");
+      return;
+    }
+    // Fit the area to buildings and components its edge cuts through, rather
+    // than slicing them in two.
+    const footprints: Vec2[][] = sceneRef.current
+      .filter((c) => !UNSNAPPED_KINDS.includes(c.kind) && !c.path)
+      .flatMap((c) => outlines(c));
+    /** Outer rings of the polygons drawn by `layers` under the selection. */
+    const ringsUnder = (layers: string[]): Vec2[][] =>
+      layers.length
+        ? map
+            .queryRenderedFeatures(
+              [
+                [left, top],
+                [right, bottom],
+              ],
+              { layers },
+            )
+            .flatMap((feature) => {
+              const geometry = feature.geometry;
+              const polygons =
+                geometry.type === "Polygon"
+                  ? [geometry.coordinates]
+                  : geometry.type === "MultiPolygon"
+                    ? geometry.coordinates
+                    : [];
+              return polygons.flatMap(([outer]) =>
+                outer && outer.length >= 4
+                  ? [outer.slice(0, -1).map(([lng, lat]) => toLocal(lng, lat))]
+                  : [],
+              );
+            })
+        : [];
+    footprints.push(
+      ...ringsUnder(
+        ["osm-buildings", "osm-remainder"].filter((id) => map.getLayer(id)),
+      ),
+    );
+    // Open ground (grass, parks, pitches) cut by the edge, from the basemap.
+    const green = /cemetery|stadium|pitch|park/i;
+    const ground = ringsUnder(
+      map
+        .getStyle()
+        .layers.filter(
+          (layer) =>
+            layer.type === "fill" &&
+            "source-layer" in layer &&
+            (layer["source-layer"] === "landcover" ||
+              (layer["source-layer"] === "landuse" && green.test(layer.id))),
+        )
+        .map((layer) => layer.id),
+    );
+    const snapped = fitEdges(ring, footprints, ground).map((r) =>
+      r.map(([x, y]): Vec2 => [round(x), round(y)]),
+    );
+    const before = areasRef.current.length;
+    const next = addArea(areasRef.current, {
+      id: crypto.randomUUID(),
+      rings: [ring, ...snapped],
+    });
+    commitAreas(next);
+    setNotice(
+      next.length <= before
+        ? "Joined with the section next to it; they now form one editable area."
+        : snapped.length
+          ? "This area is now editable, widened to fit the buildings, components and green space on its edge."
+          : "This area is now editable.",
+    );
+  }
 
   function onDrop(event: React.DragEvent<HTMLDivElement>) {
     const kind = event.dataTransfer.getData(TOOL_MIME) as ComponentKind;
@@ -1082,11 +1646,11 @@ export function IntersectionEditor() {
       event.clientY - box.top,
     ]);
     const [x, y] = toLocal(lng, lat);
-    const created = componentFromDrop(kind, x, y);
-    if (typeof created === "string") {
-      setNotice(created);
+    if (!isEditable(areasRef.current, [x, y])) {
+      setNotice(READ_ONLY);
       return;
     }
+    const created = componentFromDrop(kind, x, y);
     const next = [...sceneRef.current, created];
     if (breaksSidewalkRule(next, new Set([created.id]))) {
       setNotice(SIDEWALK_RULE);
@@ -1125,12 +1689,112 @@ export function IntersectionEditor() {
         aria-label="3D intersection map"
       />
 
+      {/* Greys out the read-only map; editable areas are cut out of it. */}
+      <div
+        ref={greyRef}
+        aria-hidden
+        className="pointer-events-none absolute inset-0 bg-neutral-400/25 backdrop-grayscale"
+        style={{ maskSize: "100% 100%", WebkitMaskSize: "100% 100%" }}
+      />
+      {/* Outer edge of the editable areas: a wide stroke with the areas'
+          interior masked out, so overlaps show no inner boundaries. */}
+      <svg
+        aria-hidden
+        className="pointer-events-none absolute inset-0 size-full"
+      >
+        <defs>
+          <mask id="edit-area-outline" maskUnits="userSpaceOnUse">
+            <rect width="100%" height="100%" fill="white" />
+            <path ref={outlineMaskRef} fill="black" />
+          </mask>
+        </defs>
+        <path
+          ref={outlineRef}
+          fill="none"
+          stroke={AREA_COLOUR}
+          strokeWidth={6}
+          strokeLinejoin="round"
+          mask="url(#edit-area-outline)"
+        />
+      </svg>
+
+      {selectingArea && (
+        <div
+          role="presentation"
+          className="absolute inset-0 z-[5] cursor-crosshair touch-none select-none"
+          onPointerDown={(event) => {
+            const box = event.currentTarget.getBoundingClientRect();
+            const x = event.clientX - box.left;
+            const y = event.clientY - box.top;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            setSnip({ x0: x, y0: y, x1: x, y1: y });
+          }}
+          onPointerMove={(event) => {
+            if (!snip) return;
+            const box = event.currentTarget.getBoundingClientRect();
+            setSnip({
+              ...snip,
+              x1: event.clientX - box.left,
+              y1: event.clientY - box.top,
+            });
+          }}
+          onPointerUp={finishSnip}
+        >
+          {!snip &&
+            areas.map((area, index) => {
+              const map = mapRef.current;
+              if (!map) return null;
+              // Pin the button to the area's top-most corner on screen.
+              const corner = area.rings
+                .flat()
+                .map((p) => map.project(toLngLat(p)))
+                .reduce((top, p) => (p.y < top.y ? p : top));
+              return (
+                <button
+                  key={area.id}
+                  type="button"
+                  title="Remove this editable area"
+                  aria-label={`Remove editable area ${index + 1}`}
+                  className="absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-1 rounded-full bg-[#2f80ed] py-0.5 pr-1 pl-2 text-[11px] font-semibold text-white shadow-lg hover:bg-red-600"
+                  style={{ left: corner.x, top: corner.y - 4 }}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onPointerUp={(event) => event.stopPropagation()}
+                  onClick={() => {
+                    commitAreas(
+                      areasRef.current.filter((a) => a.id !== area.id),
+                    );
+                    setNotice(`Area ${index + 1} is read-only again.`);
+                  }}
+                >
+                  Area {index + 1}
+                  <span className="flex size-4 items-center justify-center rounded-full bg-white/25 leading-none">
+                    ×
+                  </span>
+                </button>
+              );
+            })}
+          {snip ? (
+            <div
+              className="absolute border-2 border-dashed border-white bg-white/10 shadow-[0_0_0_9999px_rgb(0_0_0/0.3)]"
+              style={{
+                left: Math.min(snip.x0, snip.x1),
+                top: Math.min(snip.y0, snip.y1),
+                width: Math.abs(snip.x1 - snip.x0),
+                height: Math.abs(snip.y1 - snip.y0),
+              }}
+            />
+          ) : (
+            <div className="absolute inset-0 -z-10 bg-black/30" />
+          )}
+        </div>
+      )}
+
       <aside
         data-toolbox
         aria-label="Component tools"
         className="absolute top-3 left-3 z-10 max-h-[calc(100%-1.5rem)] w-[172px] overflow-y-auto rounded-lg border bg-background/95 p-2 shadow-lg backdrop-blur"
       >
-        <p className="px-1 pb-1 text-xs font-semibold">Tools</p>
+        <p className="px-1 pb-1 text-xs font-semibold">Add Components</p>
         {groups.map((group) => (
           <div key={group} className="pb-2">
             <p className="px-1 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
@@ -1161,8 +1825,8 @@ export function IntersectionEditor() {
           </div>
         ))}
         <p className="px-1 pt-1 text-[10px] leading-snug text-muted-foreground">
-          Select a highlighted road to inspect it. Click a building to edit its
-          appearance.
+          Select a highlighted road to inspect it. In an editable area, click a
+          building, signal or sign to edit it.
         </p>
       </aside>
 
@@ -1177,6 +1841,63 @@ export function IntersectionEditor() {
         aria-label="Planning tools"
         className="absolute top-3 right-3 z-10 flex flex-col gap-1.5"
       >
+        <div className="flex gap-1.5">
+          <Button
+            variant="outline"
+            className="flex-1 bg-background shadow-lg dark:bg-background"
+            disabled={!history.undo}
+            title="Undo (Ctrl+Z)"
+            onClick={undo}
+          >
+            ↶ Undo
+          </Button>
+          <Button
+            variant="outline"
+            className="flex-1 bg-background shadow-lg dark:bg-background"
+            disabled={!history.redo}
+            title="Redo (Ctrl+Y)"
+            onClick={redo}
+          >
+            ↷ Redo
+          </Button>
+        </div>
+        <Button
+          variant={selectingArea ? "default" : "outline"}
+          className="justify-start shadow-lg not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
+          aria-pressed={selectingArea}
+          title="Drag a rectangle on the map to make that section editable"
+          onClick={() => {
+            const next = !selectingArea;
+            setSelectingArea(next);
+            setSnip(null);
+            setMenu(null);
+            select(null);
+            if (measuringRef.current) toggleMeasuring();
+            setNotice(
+              next
+                ? areasRef.current.length
+                  ? "Drag a rectangle to add an area, or click an area's × to remove it."
+                  : "Drag a rectangle over the part of the map you want to edit."
+                : null,
+            );
+          }}
+        >
+          ⬚ Select area
+        </Button>
+        {areas.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="justify-start bg-background shadow-lg dark:bg-background"
+            onClick={() => {
+              commitAreas([]);
+              select(null);
+              setNotice("All areas are read-only again. Undo to restore them.");
+            }}
+          >
+            Clear editable areas
+          </Button>
+        )}
         <Button
           variant={measuring ? "default" : "outline"}
           className="justify-start shadow-lg not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
@@ -1300,6 +2021,36 @@ export function IntersectionEditor() {
         <Button
           variant="ghost"
           size="icon-lg"
+          aria-label="Bird's-eye view"
+          title="Bird's-eye view"
+          className="rounded-none"
+          onClick={birdsEye}
+        >
+          <svg viewBox="0 0 24 24" className="size-5" aria-hidden="true">
+            <path
+              d="M2 9c2.6-1.6 5.6-1.2 8 1.6L12 13l2-2.4c2.4-2.8 5.4-3.2 8-1.6-2.8.2-4.6 1.6-6.2 3.8L12 18l-3.8-5.2C6.6 10.6 4.8 9.2 2 9z"
+              fill="currentColor"
+            />
+          </svg>
+        </Button>
+        <div className="h-px bg-border" />
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          aria-label="Turn the view 180 degrees"
+          title="Turn the view 180°"
+          className="rounded-none text-lg"
+          onClick={() => {
+            const map = mapRef.current;
+            map?.easeTo({ bearing: map.getBearing() + 180, duration: 800 });
+          }}
+        >
+          ⟲
+        </Button>
+        <div className="h-px bg-border" />
+        <Button
+          variant="ghost"
+          size="icon-lg"
           aria-label="Show imported network"
           title="Show imported network"
           className="rounded-none text-xs"
@@ -1328,6 +2079,12 @@ export function IntersectionEditor() {
           The Toronto basemap could not load. Check that{" "}
           <code>MAPTILER_API_KEY</code> is set in <code>app/.env.local</code>,
           then restart <code>pnpm dev</code>.
+        </div>
+      )}
+
+      {mapReady && !areas.length && !selectingArea && (
+        <div className="pointer-events-none absolute top-3 left-1/2 z-10 -translate-x-1/2 rounded-full bg-neutral-900/85 px-4 py-1.5 text-xs text-white shadow">
+          The map is read-only. Use Select area to choose a section to edit.
         </div>
       )}
 

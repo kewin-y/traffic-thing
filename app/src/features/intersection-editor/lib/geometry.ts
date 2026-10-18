@@ -74,3 +74,16 @@ export function place(
     y + (px * sin + py * cos) * scale,
   ]);
 }
+
+/** Whether `point` lies inside the ring (even-odd rule). */
+export function pointInRing(point: Vec2, ring: Vec2[]): boolean {
+  const [px, py] = point;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
