@@ -44,6 +44,7 @@ export class ProjectAutosave {
   getStatus = () => this.status;
   getMessage = () => this.message;
   getState = () => this.state;
+  getRevision = () => this.revision;
   isDirty = () => JSON.stringify(this.state) !== this.saved;
   private publish(status: SaveStatus, message = "") {
     this.status = status;

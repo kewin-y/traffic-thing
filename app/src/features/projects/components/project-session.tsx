@@ -1,6 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { SimulateDialog } from "@/features/simulations/components/simulate-dialog";
+import {
+  SimulationHistory,
+  useSimulationHistory,
+} from "@/features/simulations/components/simulation-history";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -26,6 +31,10 @@ function sessionDraftKey(data: ProjectData) {
   return `${draftKey(data.project.ownerId, data.project._id)}:${tab}`;
 }
 export function ProjectSession({ data }: { data: ProjectData }) {
+  const history = useSimulationHistory(data.project._id);
+  const active = history.results.some(
+    (run) => run.status === "queued" || run.status === "running",
+  );
   const save = useMutation(api.projects.mutations.save);
   // Keep this editor session stable while Convex publishes our own saves.
   const [session] = useState(() => {
@@ -93,6 +102,13 @@ export function ProjectSession({ data }: { data: ProjectData }) {
             }[status]
           }
         </p>
+        <SimulateDialog
+          projectId={session.project._id}
+          autosave={session.autosave}
+          saved={status === "saved"}
+          hasNetwork={Boolean(session.project.network)}
+          active={active}
+        />
       </div>
       {(status === "error" || status === "conflict") && (
         <div
@@ -138,6 +154,7 @@ export function ProjectSession({ data }: { data: ProjectData }) {
           onStateChange={session.autosave.update}
         />
       </div>
+      <SimulationHistory history={history} />
     </div>
   );
 }

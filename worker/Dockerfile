@@ -34,6 +34,11 @@ COPY src/ ./src/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable --python /usr/local/bin/python3.12
 
+FROM build AS test
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --group import --no-editable --python /usr/local/bin/python3.12
+ENV PATH="/app/.venv/bin:$PATH"
+
 FROM build AS importer
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --group import --no-editable --python /usr/local/bin/python3.12
@@ -43,6 +48,8 @@ FROM base AS runtime
 RUN groupadd --gid 10001 worker \
     && useradd --uid 10001 --gid 10001 --create-home worker \
     && mkdir -p /data/networks \
+    && mkdir -p /data/runs \
+    && chown 10001:10001 /data/runs \
     && mkdir -p /data/timelines \
     && chmod 755 /data /data/networks \
     && chown 10001:10001 /data/timelines \
