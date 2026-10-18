@@ -16,10 +16,19 @@ Follow the Convex/auth setup prompts. Add `MAPTILER_API_KEY=...` to
 through `/api/maptiler/` to keep the key on the server.
 
 Open [localhost:3000](http://localhost:3000). Create projects from the dashboard;
-map edits autosave. Simulate runs the project's pinned network with synthetic
-demand. Deleting an imported road closes that direction; changing its width changes
-the lane count. Other scene objects do not affect simulations.
-Run history provides metrics and recording downloads; playback is not implemented.
+map edits autosave. Simulate runs the project's pinned network with GCN car
+demand when the worker has a matching model, plus synthetic pedestrians, cyclists,
+and scooters. Baseline and edited runs use the same demand pipeline and warm-up.
+Deleting an imported road closes that direction; changing its width changes the
+lane count. Other scene objects are visual only.
+
+Recording is enabled by default. Select a run in history to play, pause, scrub,
+change speed, and view congestion on the map. Playback identifies the car-demand
+source and warm-up duration, and separates decorative resting people from
+simulated pedestrians. Furniture positions come from the run's snapshot; the
+underlying map shows the current editor layout. Older v1 recordings remain
+downloadable but require a new run for playback. Trip averages include each
+completed car's full history, potentially including warm-up time.
 
 ## Planning assistant
 

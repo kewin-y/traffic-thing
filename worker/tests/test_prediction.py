@@ -5,13 +5,13 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
-
 from traffic_worker import api
 
 
 class FakePredictor:
     def __init__(self):
         self.calls = []
+        self.base_pred = pd.DataFrame({"edge_id": ["e1"], "veh_per_hour": [360.0]})
 
     def apply_request_edits(self, edits):
         self.calls.append(edits)
@@ -71,7 +71,7 @@ def test_edited_request_predicts_and_passes_fresh_edgedata(simulating_worker):
     predictor = FakePredictor()
     with TestClient(api.app) as client:
         client.app.state.predictor = predictor
-        response = simulate(client, edits=[{"type": "close_edge", "edge_id": "e1"}])
+        response = simulate(client, duration_seconds=200, edits=[{"type": "close_edge", "edge_id": "unknown-edge"}])
 
     assert response.status_code == 200
     assert len(predictor.calls) == 1
@@ -87,20 +87,48 @@ def test_edited_request_predicts_and_passes_fresh_edgedata(simulating_worker):
         for e in ET.fromstring(process.edgedata_at_run).iter("edge")
     }
     # closed edges are written with 0 even when the volumes omit them
-    assert edges == {"e1": "10", "closed-edge": "0"}
+    assert edges == {"e1": "2", "closed-edge": "0", "unknown-edge": "0"}
+    interval = ET.fromstring(process.edgedata_at_run).find("interval")
+    assert interval.get("end") == "800"
+    assert not Path(process.env["PREDICTED_EDGEDATA_PATH"]).exists()
 
 
-def test_no_edits_skips_prediction_and_strips_leaked_env(simulating_worker):
+def test_baseline_predicts_over_warmup_and_measurement(simulating_worker):
     predictor = FakePredictor()
     with TestClient(api.app) as client:
         client.app.state.predictor = predictor
-        response = simulate(client)
+        response = simulate(client, duration_seconds=200)
 
+    assert response.status_code == 200
+    assert predictor.calls == [[]]
+    (process,) = simulating_worker
+    interval = ET.fromstring(process.edgedata_at_run).find("interval")
+    assert interval.get("end") == "800"
+    assert interval.find("edge").get("entered") == "80"
+
+
+def test_other_network_uses_mounted_demand(simulating_worker):
+    predictor = FakePredictor()
+    with TestClient(api.app) as client:
+        client.app.state.predictor = predictor
+        response = simulate(client, network="demo")
     assert response.status_code == 200
     assert predictor.calls == []
     assert response.json()["prediction"] is None
-    (process,) = simulating_worker
-    assert "PREDICTED_EDGEDATA_PATH" not in process.env
+    assert "PREDICTED_EDGEDATA_PATH" not in simulating_worker[0].env
+
+
+def test_prediction_failure_falls_back_and_cleans_up(simulating_worker, monkeypatch):
+    predictor = FakePredictor()
+    def fail(*args):
+        raise RuntimeError("prediction failed")
+    monkeypatch.setattr(predictor, "apply_request_edits", fail)
+    with TestClient(api.app) as client:
+        client.app.state.predictor = predictor
+        response = simulate(client)
+    assert response.status_code == 200
+    assert response.json()["prediction"] is None
+    assert "PREDICTED_EDGEDATA_PATH" not in simulating_worker[0].env
 
 
 def test_disabled_predictor_strips_leaked_env(simulating_worker):

@@ -16,6 +16,18 @@ def network_assets(root: Path, network: str) -> tuple[Path, Path]:
     return paths[0], paths[1]
 
 
+def osm_source(root: Path, network: str) -> Path | None:
+    """The network's OpenStreetMap extract, if the operator mounted one."""
+    root = root.resolve(strict=True)
+    path = root / network / "source.osm.xml"
+    if not path.is_file():
+        return None
+    path = path.resolve(strict=True)
+    if not path.is_relative_to(root):
+        raise ValueError("Network assets must be files within NETWORK_ROOT")
+    return path
+
+
 def verify_network_version(root: Path, network: str, expected: str) -> str:
     """Verify the manifest identity and the actual simulation inputs before running."""
     import hashlib
@@ -37,7 +49,14 @@ def verify_network_version(root: Path, network: str, expected: str) -> str:
     version = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()[:16]
     if manifest.get("network") != network or manifest.get("network_version") != version or version != expected:
         raise ValueError("Worker network version does not match the project")
-    for name, path in [("network.net.xml", source), ("demand.rou.xml", demand)]:
+    inputs = [("network.net.xml", source), ("demand.rou.xml", demand)]
+    osm = osm_source(root, network)
+    # The extract sets posted speed limits, so it must match too when listed.
+    if "source.osm.xml" in hashes:
+        if osm is None:
+            raise ValueError("Worker network manifest requires source.osm.xml")
+        inputs.append(("source.osm.xml", osm))
+    for name, path in inputs:
         with path.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if hashes.get(name) != digest:

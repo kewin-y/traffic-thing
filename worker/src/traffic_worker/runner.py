@@ -13,70 +13,129 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from .assets import network_assets, verify_network_version
-from .models import SimulationRequest
-
+from .active_demand import (
+    CYCLIST_PREFIX,
+    SCOOTER_PREFIX,
+    is_active_vehicle,
+    walkable_network,
+    write_active_demand,
+)
+from .assets import network_assets, osm_source, verify_network_version
 from .demand import sample_demand
+from .models import SimulationRequest
+from .timing import frame_interval_seconds, simulation_horizon_seconds, warmup_seconds
+
+KINDS = ("car", "pedestrian", "bicycle", "scooter")
+
+
+def _vehicle_kind(vehicle_id: str) -> str:
+    if vehicle_id.startswith(SCOOTER_PREFIX):
+        return "scooter"
+    if vehicle_id.startswith(CYCLIST_PREFIX):
+        return "bicycle"
+    return "car"
+
 
 class _TimelineWriter:
-    """Stream sampled simulation state into a compressed JSON timeline."""
+    """Stream sampled simulation state into a compressed JSON timeline.
 
-    def __init__(self, path: Path, sample_interval_seconds: int):
+    Frames hold every vehicle and person as flat rows of agent index,
+    longitude, latitude, heading and speed; agent IDs and kinds are written
+    once at the end. Every sample interval a frame also carries the edges
+    with vehicles on them, for congestion.
+    """
+
+    def __init__(
+        self, path: Path, sample_interval_seconds: int, frame_interval_seconds: int = 1,
+        warmup_seconds: int = 0, demand_source: str = "mounted",
+    ):
         self.path = path
         self.partial_path = path.with_name(f"{path.name}.partial")
         self._stack = ExitStack()
         self.file = self._stack.enter_context(
             gzip.open(self.partial_path, "wt", encoding="utf-8")  # noqa: SIM115 -- ExitStack keeps it open across steps
         )
-        self.first_sample = True
+        self.first_frame = True
+        self.agents: dict[str, int] = {}
+        self.agent_rows: list[list[Any]] = []
+        self.edges: dict[str, int] = {}
+        self.edge_rows: list[list[Any]] = []
         try:
             header = json.dumps({
-                "format": "traffic-worker-timeline-v1",
-                "coordinate_system": "SUMO network coordinates",
+                "format": "traffic-worker-timeline-v2",
+                "coordinate_system": "WGS84 longitude and latitude",
                 "sample_interval_seconds": sample_interval_seconds,
+                "frame_interval_seconds": frame_interval_seconds,
+                "warmup_seconds": warmup_seconds,
+                "demand_source": demand_source,
+                "kinds": KINDS,
+                "agent_fields": ["agent", "longitude", "latitude", "heading_degrees", "speed_mps"],
+                "edge_fields": ["edge", "mean_speed_mps", "vehicle_count"],
             }, separators=(",", ":"))
-            self.file.write(f'{header[:-1]},"samples":[')
+            self.file.write(f'{header[:-1]},"frames":[')
         except BaseException:
             self._stack.close()
             self.partial_path.unlink(missing_ok=True)
             raise
 
-    def write_sample(self, libsumo: Any, time_seconds: int) -> None:
-        if not self.first_sample:
+    def _agent(self, agent_id: str, kind: str) -> int:
+        index = self.agents.get(agent_id)
+        if index is None:
+            index = self.agents[agent_id] = len(self.agent_rows)
+            self.agent_rows.append([agent_id, KINDS.index(kind)])
+        return index
+
+    def _edge(self, libsumo: Any, edge_id: str) -> int:
+        index = self.edges.get(edge_id)
+        if index is None:
+            index = self.edges[edge_id] = len(self.edge_rows)
+            free_flow = max(
+                libsumo.lane.getMaxSpeed(f"{edge_id}_{lane}")
+                for lane in range(libsumo.edge.getLaneNumber(edge_id))
+            )
+            self.edge_rows.append([edge_id, round(free_flow, 2)])
+        return index
+
+    def write_frame(self, libsumo: Any, time_seconds: int, edges: bool) -> None:
+        if not self.first_frame:
             self.file.write(",")
-        self.first_sample = False
-        vehicles = []
-        for vehicle_id in libsumo.vehicle.getIDList():
-            x, y = libsumo.vehicle.getPosition(vehicle_id)
-            vehicles.append({
-                "id": vehicle_id,
-                "x": x,
-                "y": y,
-                "speed_mps": libsumo.vehicle.getSpeed(vehicle_id),
-                "edge_id": libsumo.vehicle.getRoadID(vehicle_id),
-            })
-        sample = {
-            "time_seconds": time_seconds,
-            "vehicles": vehicles,
-            "edges": [
-                {
-                    "id": edge_id,
-                    "mean_speed_mps": (
-                        libsumo.edge.getLastStepMeanSpeed(edge_id)
-                        if libsumo.edge.getLastStepVehicleNumber(edge_id)
-                        else max(libsumo.lane.getMaxSpeed(f"{edge_id}_{index}") for index in range(libsumo.edge.getLaneNumber(edge_id)))
-                    ),
-                    "free_flow_speed_mps": max(libsumo.lane.getMaxSpeed(f"{edge_id}_{index}") for index in range(libsumo.edge.getLaneNumber(edge_id))),
-                    "vehicle_count": libsumo.edge.getLastStepVehicleNumber(edge_id),
-                }
-                for edge_id in libsumo.edge.getIDList()
-                if not edge_id.startswith(":")
-            ],
-        }
-        json.dump(sample, self.file, allow_nan=False, separators=(",", ":"))
+        self.first_frame = False
+        rows: list[float | int] = []
+        for domain, kind_of in (
+            (libsumo.vehicle, _vehicle_kind),
+            (libsumo.person, lambda _: "pedestrian"),
+        ):
+            for agent_id in domain.getIDList():
+                x, y = domain.getPosition(agent_id)
+                longitude, latitude = libsumo.simulation.convertGeo(x, y)
+                rows += [
+                    self._agent(agent_id, kind_of(agent_id)),
+                    round(longitude, 6),
+                    round(latitude, 6),
+                    round(domain.getAngle(agent_id)),
+                    round(domain.getSpeed(agent_id), 1),
+                ]
+        frame: dict[str, Any] = {"time_seconds": time_seconds, "agents": rows}
+        if edges:
+            edge_rows: list[float | int] = []
+            for edge_id in libsumo.edge.getIDList():
+                if edge_id.startswith(":"):
+                    continue
+                count = libsumo.edge.getLastStepVehicleNumber(edge_id)
+                if count:
+                    edge_rows += [
+                        self._edge(libsumo, edge_id),
+                        round(libsumo.edge.getLastStepMeanSpeed(edge_id), 2),
+                        count,
+                    ]
+            frame["edges"] = edge_rows
+        json.dump(frame, self.file, allow_nan=False, separators=(",", ":"))
 
     def finish(self) -> None:
-        self.file.write("]}")
+        self.file.write(
+            '],"agents":' + json.dumps(self.agent_rows, separators=(",", ":"))
+            + ',"edges":' + json.dumps(self.edge_rows, separators=(",", ":")) + "}"
+        )
         self._stack.close()
         os.replace(self.partial_path, self.path)
 
@@ -113,6 +172,7 @@ def _edited_network(
     network = sumolib.net.readNet(str(source))
     edges = {edge.getID(): edge for edge in network.getEdges()}
     patches: dict[str, dict[str, str]] = {}
+    lane_counts: dict[str, int] = {}
     for edit in request.edits:
         edge = edges.get(edit.edge_id)
         if edge is None or edge.getFunction() == "internal" or edit.edge_id.startswith(":"):
@@ -121,7 +181,14 @@ def _edited_network(
         if edit.type == "set_speed_limit":
             attributes["speed"] = str(edit.speed_mps)
         elif edit.type == "set_lane_count":
-            attributes["numLanes"] = str(edit.lane_count)
+            # The editor counts vehicle lanes, not the dedicated sidewalk
+            # that netconvert may have inserted at lane index zero.
+            sidewalks = sum(
+                lane.allows("pedestrian") and not lane.allows("passenger")
+                and not lane.allows("bicycle") for lane in edge.getLanes()
+            )
+            attributes["numLanes"] = str(edit.lane_count + sidewalks)
+            lane_counts[edit.edge_id] = edit.lane_count + sidewalks
         elif edit.type == "close_edge":
             # Keep the edge and all demand references; no vehicle may use it.
             attributes["disallow"] = "all"
@@ -134,12 +201,39 @@ def _edited_network(
     for attributes in patches.values():
         ET.SubElement(root, "edge", attributes)
     ET.ElementTree(root).write(patch_path, encoding="utf-8", xml_declaration=True)
+    connection_args: list[str] = []
+    if lane_counts:
+        # netconvert otherwise drops turns that used a removed lane. Preserve
+        # the imported edge-to-edge movements by moving those connections to
+        # the last remaining lane, without introducing any new turns.
+        connections = ET.Element("connections")
+        seen: set[tuple[str, str, int, int]] = set()
+        for _, element in ET.iterparse(source, events=("end",)):
+            if element.tag == "connection":
+                start, end = element.get("from", ""), element.get("to", "")
+                if start in edges and end in edges and (start in lane_counts or end in lane_counts):
+                    from_lane = min(int(element.attrib["fromLane"]), lane_counts.get(start, edges[start].getLaneNumber()) - 1)
+                    to_lane = min(int(element.attrib["toLane"]), lane_counts.get(end, edges[end].getLaneNumber()) - 1)
+                    key = (start, end, from_lane, to_lane)
+                    if key not in seen:
+                        seen.add(key)
+                        attributes = {
+                            name: value for name, value in element.attrib.items()
+                            if name in {"from", "to", "pass", "keepClear", "contPos", "visibility", "speed", "allow", "disallow", "uncontrolled"}
+                        }
+                        attributes.update(fromLane=str(from_lane), toLane=str(to_lane))
+                        ET.SubElement(connections, "connection", attributes)
+            element.clear()
+        connection_path = scratch / "edits.con.xml"
+        ET.ElementTree(connections).write(connection_path, encoding="utf-8", xml_declaration=True)
+        connection_args = ["--connection-files", str(connection_path)]
     edited_path = scratch / "network.net.xml"
     completed = subprocess.run(
         [
             sumolib.checkBinary("netconvert"),
             "--sumo-net-file", str(source),
             "--edge-files", str(patch_path),
+            *connection_args,
             "--output-file", str(edited_path),
             "--ignore-errors", "false",
         ],
@@ -153,14 +247,19 @@ def _edited_network(
     return edited_path
 
 
-def _completed_trip_metrics(path: Path, expected_completed: int) -> dict[str, Any]:
+def _completed_trip_metrics(
+    path: Path, expected_completed: int, arrived_ids: set[str] | None = None
+) -> dict[str, Any]:
     completed = 0
     duration = waiting = time_loss = 0.0
     for _, element in ET.iterparse(path, events=("end",)):
         # Removed/vaporized and unfinished vehicles must not become arrivals.
         if (
             element.tag == "tripinfo"
+            and not is_active_vehicle(element.attrib["id"])
             and float(element.attrib["arrival"]) >= 0
+            # Trips finished during warm-up are outside the measured window.
+            and (arrived_ids is None or element.attrib["id"] in arrived_ids)
             and not element.get("vaporized")
         ):
             completed += 1
@@ -186,13 +285,21 @@ def _simulate(
     demand: Path,
     scratch: Path,
     timeline_path: Path | None = None,
+    active_demand: Path | None = None,
 ) -> dict[str, Any]:
     import libsumo
 
     tripinfo = scratch / "tripinfo.xml"
-    departed = arrived = 0
+    departed = 0
+    arrived_ids: set[str] = set()
+    warmup = warmup_seconds(request.duration_seconds)
+    end = warmup + request.duration_seconds
+    frame_interval = frame_interval_seconds(request.duration_seconds)
     timeline = (
-        _TimelineWriter(timeline_path, request.sample_interval_seconds)
+        _TimelineWriter(
+            timeline_path, request.sample_interval_seconds, frame_interval,
+            warmup, "model" if os.environ.get("PREDICTED_EDGEDATA_PATH") else "mounted",
+        )
         if request.record and timeline_path is not None
         else None
     )
@@ -202,11 +309,14 @@ def _simulate(
         libsumo.start([
             "sumo",
             "--net-file", str(network),
-            "--route-files", str(demand),
+            "--route-files", ",".join(str(p) for p in (demand, active_demand) if p),
             "--begin", "0",
-            "--end", str(request.duration_seconds),
+            "--end", str(end),
             "--step-length", "1",
             "--seed", str(request.seed),
+            # Drivers keep to the posted limit rather than SUMO's default
+            # spread of ±10% around it (types that set their own spread keep it).
+            "--default.speeddev", "0",
             # Parse every input record up front, including demand beyond the horizon.
             "--route-steps", "0",
             "--ignore-route-errors", "false",
@@ -221,34 +331,71 @@ def _simulate(
             "--duration-log.disable", "true",
         ])
         version = libsumo.getVersion()[1]
-        for _ in range(request.duration_seconds):
+        if warmup == 0 and timeline:
+            timeline.write_frame(libsumo, 0, edges=True)
+        next_edge_sample = 0
+        for _ in range(end):
             libsumo.simulationStep()
-            departed += libsumo.simulation.getDepartedNumber()
-            arrived += libsumo.simulation.getArrivedNumber()
-            current_time = int(libsumo.simulation.getTime())
-            if timeline and (
-                current_time % request.sample_interval_seconds == 0
-                or current_time == request.duration_seconds
-            ):
-                timeline.write_sample(libsumo, current_time)
+            # Times below are within the measured window, after warm-up.
+            current_time = int(libsumo.simulation.getTime()) - warmup
+            if current_time == 0 and timeline:
+                timeline.write_frame(libsumo, 0, edges=True)
+                next_edge_sample = request.sample_interval_seconds
+            if current_time <= 0:
+                continue
+            # Car metrics exclude the generated cyclists and scooter riders.
+            departed += sum(
+                not is_active_vehicle(v) for v in libsumo.simulation.getDepartedIDList()
+            )
+            arrived_ids.update(
+                v for v in libsumo.simulation.getArrivedIDList() if not is_active_vehicle(v)
+            )
+            final = current_time == request.duration_seconds
+            if timeline and (current_time % frame_interval == 0 or final):
+                timeline.write_frame(
+                    libsumo,
+                    current_time,
+                    edges=final or current_time >= next_edge_sample,
+                )
+                if current_time >= next_edge_sample:
+                    next_edge_sample = (
+                        current_time // request.sample_interval_seconds + 1
+                    ) * request.sample_interval_seconds
         result = {
             "network": request.network,
             "seed": request.seed,
             "sumo_version": version,
-            "simulation_time_seconds": libsumo.simulation.getTime(),
-            "completed": arrived,
+            "simulation_time_seconds": libsumo.simulation.getTime() - warmup,
+            "warmup_seconds": warmup,
+            "completed": len(arrived_ids),
             "departed": departed,
-            "running": libsumo.vehicle.getIDCount(),
-            "pending": len(libsumo.simulation.getPendingVehicles()),
+            "running": sum(
+                not is_active_vehicle(v) for v in libsumo.vehicle.getIDList()
+            ),
+            "pending": sum(
+                not is_active_vehicle(v)
+                for v in libsumo.simulation.getPendingVehicles()
+            ),
             "applied_edits": [edit.model_dump(mode="json") for edit in request.edits],
             "metric_semantics": {
-                "population": "vehicles only; persons and containers are excluded",
+                "population": (
+                    "cars only; the generated pedestrians, cyclists and e-scooter "
+                    "riders share the roads but are excluded"
+                ),
                 "pending": (
                     "vehicles awaiting insertion whose scheduled departure was before "
                     "the exclusive horizon; future departures and untriggered vehicles "
                     "are excluded"
                 ),
-                "averages": "completed, non-vaporized trips only; null if none completed",
+                "window": (
+                    "departure and arrival counts cover the requested duration after "
+                    "warmup_seconds; running and pending are end-of-window snapshots"
+                ),
+                "averages": (
+                    "full-trip duration, wait and time loss for non-vaporized cars "
+                    "arriving in the measured window, including time before it; "
+                    "null if none completed"
+                ),
                 "waiting_time": "SUMO tripinfo waitingTime; excludes departure delay",
             },
         }
@@ -261,7 +408,7 @@ def _simulate(
         if libsumo.isLoaded():
             libsumo.close()
     try:
-        result.update(_completed_trip_metrics(tripinfo, arrived))
+        result.update(_completed_trip_metrics(tripinfo, len(arrived_ids), arrived_ids))
         if timeline:
             timeline.finish()
         return result
@@ -274,31 +421,37 @@ def _simulate(
 def run_simulation(
     request: SimulationRequest, timeline_path: Path | None = None
 ) -> dict[str, Any]:
-    """Run mounted demand, or model-sampled demand when the API provided targets.
+    """Prepare roads, choose mounted or GCN demand, then derive active travel.
 
-    Without PREDICTED_EDGEDATA_PATH the mounted demand is used as-is: trusted,
-    not rewritten, repaired, or rerouted; invalid fixed routes fail; no routing
-    tool or ignore-errors option repairs them. With PREDICTED_EDGEDATA_PATH the
-    mounted demand is only a candidate route pool: routeSampler re-samples it to
-    match the API's predicted per-edge counts.
+    Model targets and sampled departures cover warm-up plus measurement.
+    Mounted car routes retain strict validation; only generated active trips
+    may be dropped when unroutable.
     """
     with _stdout_to_stderr():
-        source, demand = network_assets(
-            Path(os.environ.get("NETWORK_ROOT", "/data/networks")), request.network
-        )
+        root = Path(os.environ.get("NETWORK_ROOT", "/data/networks"))
+        source, demand = network_assets(root, request.network)
+        osm = osm_source(root, request.network)
         if request.network_version:
             verify_network_version(Path(os.environ.get("NETWORK_ROOT", "/data/networks")), request.network, request.network_version)
         with TemporaryDirectory(prefix="traffic-worker-") as directory:
             scratch = Path(directory)
-            network = _edited_network(request, source, scratch)
+            # Add sidewalks and default speeds before applying the user's edits.
+            network = _edited_network(
+                request, walkable_network(source, scratch, osm), scratch
+            )
+            horizon = simulation_horizon_seconds(request.duration_seconds)
             edgedata = os.environ.get("PREDICTED_EDGEDATA_PATH")
             if edgedata:
                 sampled = scratch / "predicted_demand.rou.xml"
-                sample_demand(demand, Path(edgedata), request.duration_seconds, request.seed, sampled)
+                sample_demand(demand, Path(edgedata), horizon, request.seed, sampled)
                 demand = sampled
-            result = _simulate(request, network, demand, scratch, timeline_path)
+            # Active travel follows the cars actually being simulated, including
+            # GCN-sampled departures during both warm-up and measurement.
+            active = write_active_demand(network, scratch, request.seed, horizon, demand)
+            result = _simulate(request, network, demand, scratch, timeline_path, active)
             result["demand_source"] = "model" if edgedata else "mounted"
             return result
+
 
 def main() -> int:
     request = SimulationRequest.model_validate_json(sys.stdin.buffer.read())

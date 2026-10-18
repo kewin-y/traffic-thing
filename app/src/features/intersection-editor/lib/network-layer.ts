@@ -36,7 +36,25 @@ export function addNetworkLayer(map: MapLibreMap, data: LoadedNetwork) {
       source: NETWORK_SOURCE,
       layout: { "line-cap": "round", "line-join": "round" },
       paint: {
-        "line-color": ["case", selected, "#ffc94d", "#20b8a6"],
+        // During playback, "flow" is simulated speed over free-flow speed.
+        "line-color": [
+          "case",
+          selected,
+          "#ffc94d",
+          [">=", ["to-number", ["coalesce", ["feature-state", "flow"], -1]], 0],
+          [
+            "interpolate",
+            ["linear"],
+            ["to-number", ["coalesce", ["feature-state", "flow"], 1]],
+            0,
+            "#e5484d",
+            0.45,
+            "#f5a623",
+            0.8,
+            "#2bb673",
+          ],
+          "#20b8a6",
+        ],
         "line-width": [
           "interpolate",
           ["linear"],

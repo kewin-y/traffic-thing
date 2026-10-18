@@ -21,8 +21,8 @@ from traffic_worker.assets import network_assets, verify_network_version
 from traffic_worker.demand import write_edgedata
 from traffic_worker.models import SimulationRequest
 from traffic_worker.predictor import Predictor
-from traffic_worker.receipts import claim_receipt, ReceiptBusy, ReceiptConflict
-
+from traffic_worker.receipts import ReceiptBusy, ReceiptConflict, claim_receipt
+from traffic_worker.timing import simulation_horizon_seconds
 
 logger = logging.getLogger(__name__)
 bearer = HTTPBearer(auto_error=False)
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     if not key:
         raise RuntimeError("WORKER_API_KEY must be configured")
 
-    timeout = int(os.environ.get("SIMULATION_TIMEOUT_SECONDS", "120"))
+    timeout = int(os.environ.get("SIMULATION_TIMEOUT_SECONDS", "400"))
     concurrency = int(os.environ.get("MAX_CONCURRENT_SIMULATIONS", "1"))
 
     if timeout <= 0 or concurrency <= 0:
@@ -153,17 +153,23 @@ def execute_simulation(payload: SimulationRequest, request: Request) -> dict:
         predictor = request.app.state.predictor
         if (
             predictor is not None
-            and payload.edits
             and payload.network == request.app.state.model_network
         ):
             try:
                 edited, closed, skipped = predictor.apply_request_edits(payload.edits)
-                volumes = predictor.predict_edited(edited, closed)
+                # Unknown model edges must still be excluded from SUMO routes.
+                closed = sorted(set(closed) | {
+                    edit.edge_id for edit in payload.edits if edit.type == "close_edge"
+                })
+                volumes = (
+                    predictor.predict_edited(edited, closed)
+                    if payload.edits else predictor.base_pred
+                )
                 scratch = tempfile.TemporaryDirectory(prefix="traffic-worker-model-")
                 edgedata_path = Path(scratch.name) / "edgedata.xml"
                 write_edgedata(
                     zip(volumes["edge_id"], volumes["veh_per_hour"]),
-                    closed, payload.duration_seconds, edgedata_path,
+                    closed, simulation_horizon_seconds(payload.duration_seconds), edgedata_path,
                 )
                 prediction = {"changes": predictor.compare(volumes), "unmodelled_edge_ids": skipped}
                 child_environment["PREDICTED_EDGEDATA_PATH"] = str(edgedata_path)
