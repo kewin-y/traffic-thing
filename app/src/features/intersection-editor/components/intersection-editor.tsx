@@ -72,6 +72,7 @@ import {
 } from "../lib/traffic-controls";
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
 import { componentsOverlap, gapBetween } from "../lib/spatial";
+import { snapComponent, snapTargets } from "../lib/snap";
 import { ComponentMenu } from "./component-menu";
 import { ToolIcon } from "./tool-icon";
 import { NetworkPanel } from "./network-panel";
@@ -105,6 +106,8 @@ const STREET_CLASSES = [
 const MIN_SNIP = 12;
 /** Farthest a selection corner may land from the camera's centre, in metres. */
 const MAX_SNIP_REACH = 4000;
+/** Farthest a placed or dragged component will bend to meet its neighbours. */
+const SNAP_TOLERANCE = 3;
 
 // Downtown Toronto: Bathurst St to the Don Valley, the waterfront to Bloor St.
 const DOWNTOWN_BOUNDS: [[number, number], [number, number]] = [
@@ -771,11 +774,15 @@ export function IntersectionEditor({
   const placeComponent = useCallback(
     (kind: ComponentKind, lngLat: { lng: number; lat: number }) => {
       const [x, y] = toLocal(lngLat.lng, lngLat.lat);
-      if (!isEditable(areasRef.current, [x, y])) {
+      const created = snapComponent(
+        componentFromDrop(kind, x, y),
+        snapTargets(sceneRef.current),
+        SNAP_TOLERANCE,
+      );
+      if (!isEditable(areasRef.current, [created.x, created.y])) {
         setNotice(READ_ONLY);
         return;
       }
-      const created = componentFromDrop(kind, x, y);
       const next = [...sceneRef.current, created];
       if (breaksSidewalkRule(next, new Set([created.id]))) {
         setNotice(SIDEWALK_RULE);
@@ -830,6 +837,8 @@ export function IntersectionEditor({
       before: SceneComponent[];
       moved: boolean;
       blocked: boolean;
+      /** Neighbour outlines to snap to, built once when the drag starts. */
+      targets: ReturnType<typeof snapTargets>;
     } | null = null;
     let justDragged = false;
     const markers = markersRef.current;
@@ -1023,6 +1032,7 @@ export function IntersectionEditor({
           before: sceneRef.current,
           moved: false,
           blocked: false,
+          targets: snapTargets(sceneRef.current, component.id),
         };
         map!.getCanvas().style.cursor = "grabbing";
       });
@@ -1031,7 +1041,11 @@ export function IntersectionEditor({
         if (!drag) {
           if (activeToolRef.current) {
             const [x, y] = toLocal(e.lngLat.lng, e.lngLat.lat);
-            ghostRef.current = componentFromDrop(activeToolRef.current, x, y);
+            ghostRef.current = snapComponent(
+              componentFromDrop(activeToolRef.current, x, y),
+              snapTargets(sceneRef.current),
+              SNAP_TOLERANCE,
+            );
             drawGhost();
             map!.getCanvas().style.cursor = "crosshair";
             return;
@@ -1074,7 +1088,9 @@ export function IntersectionEditor({
           x: round(drag.origin[0] + x - drag.grab[0]),
           y: round(drag.origin[1] + y - drag.grab[1]),
         };
-        const problem = preview(moved);
+        const problem = preview(
+          snapComponent(moved, drag.targets, SNAP_TOLERANCE),
+        );
         if (!problem) {
           drag.moved = true;
         } else if (!drag.blocked) {
@@ -1442,7 +1458,12 @@ export function IntersectionEditor({
         const current = sceneRef.current.find((c) => c.id === id);
         if (!current) return;
         const { lng, lat } = marker.getLngLat();
-        const next = resized(current, handle, toLocal(lng, lat));
+        const next = snapComponent(
+          resized(current, handle, toLocal(lng, lat)),
+          snapTargets(sceneRef.current, id),
+          SNAP_TOLERANCE,
+          { rotate: false },
+        );
         const problem = preview(next);
         if (problem) {
           setNotice(problem);
