@@ -30,6 +30,8 @@ Edit = Annotated[SetSpeedLimit | SetLaneCount | CloseEdge, Field(discriminator="
 
 class SimulationRequest(StrictModel):
     network: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
+    network_version: str | None = Field(default=None, pattern=r"^[a-f0-9]{16}$")
+    request_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     duration_seconds: int = Field(default=3600, ge=1, le=3600)
     seed: int = Field(default=42, ge=0, le=2147483647)
     edits: list[Edit] = Field(default_factory=list, max_length=100)

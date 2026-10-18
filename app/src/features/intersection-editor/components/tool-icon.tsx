@@ -1,5 +1,40 @@
 import type { ComponentKind } from "../lib/components";
 
+/** Canadian regulatory prohibition: black arrow, red ring and slash. */
+function TurnBan({ arrow }: { arrow: string }) {
+  return (
+    <>
+      <rect
+        x="3"
+        y="2"
+        width="18"
+        height="20"
+        rx="1.5"
+        fill="#fff"
+        stroke="#111"
+        strokeWidth="0.8"
+      />
+      <path
+        d={arrow}
+        stroke="#111"
+        strokeWidth="1.8"
+        fill="none"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle
+        cx="12"
+        cy="12"
+        r="7.2"
+        stroke="#e5392f"
+        strokeWidth="1.6"
+        fill="none"
+      />
+      <path d="M7 7l10 10" stroke="#e5392f" strokeWidth="1.6" />
+    </>
+  );
+}
+
 // Small isometric-ish glyphs for the toolbox; colours match the 3D components.
 const GLYPHS: Partial<Record<ComponentKind, React.ReactNode>> = {
   car_lane: (
@@ -169,11 +204,43 @@ const GLYPHS: Partial<Record<ComponentKind, React.ReactNode>> = {
       </text>
     </>
   ),
-  tree: (
+  yield_sign: (
     <>
-      <rect x="11" y="14" width="2" height="8" fill="#7a5534" />
-      <circle cx="12" cy="10" r="7" fill="#4f9a45" />
-      <circle cx="13.5" cy="7.5" r="3.5" fill="#6bb35a" />
+      <rect x="11.2" y="13" width="1.6" height="9" fill="#3a3d42" />
+      <path d="M3 3h18L12 17z" fill="#e5392f" />
+      <path d="M7.4 5.6h9.2L12 13.4z" fill="#fff" />
+    </>
+  ),
+  speed_hump: (
+    <>
+      <rect x="2" y="7" width="20" height="10" rx="1" fill="#4b5058" />
+      <path
+        d="M4 15c3-6 13-6 16 0"
+        fill="#6c7079"
+        stroke="#fff"
+        strokeWidth="1"
+      />
+      <path
+        d="M7 11l2 2-2 2M12 10l2 2-2 2M17 11l2 2-2 2"
+        stroke="#fff"
+        strokeWidth="0.9"
+        fill="none"
+      />
+    </>
+  ),
+  no_left_turn: <TurnBan arrow="M15 19v-7a2 2 0 0 0-2-2H8m3-3-3 3 3 3" />,
+  no_right_turn: <TurnBan arrow="M9 19v-7a2 2 0 0 1 2-2h5m-3-3 3 3-3 3" />,
+  no_u_turn: <TurnBan arrow="M9 19V10a3 3 0 0 1 6 0v5m-3-3 3 3 3-3" />,
+  no_straight_on: <TurnBan arrow="M12 19V6m-3 3 3-3 3 3" />,
+  green_area: (
+    <>
+      <rect x="2" y="6" width="20" height="12" rx="1" fill="#7cb862" />
+      <path
+        d="M5 15l1-2 1 2M10 12l1-2 1 2M15 15l1-2 1 2M18 11l1-2 1 2"
+        stroke="#4f8a3d"
+        strokeWidth="0.9"
+        fill="none"
+      />
     </>
   ),
   bench: (

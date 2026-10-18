@@ -5,6 +5,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -16,12 +17,11 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from traffic_worker.assets import network_assets
-from traffic_worker.models import SimulationRequest
-from traffic_worker.predictor import Predictor   # new
-
-import tempfile
+from traffic_worker.assets import network_assets, verify_network_version
 from traffic_worker.demand import write_edgedata
+from traffic_worker.models import SimulationRequest
+from traffic_worker.predictor import Predictor
+from traffic_worker.receipts import claim_receipt, ReceiptBusy, ReceiptConflict
 
 
 logger = logging.getLogger(__name__)
@@ -48,17 +48,30 @@ async def lifespan(app: FastAPI):
     app.state.timeout = timeout
     app.state.slots = threading.BoundedSemaphore(concurrency)
     app.state.network_root = Path(os.environ.get("NETWORK_ROOT", "/data/networks"))
+    app.state.run_root = Path(os.environ.get("RUN_ROOT", "/data/runs"))
     app.state.timeline_root = Path(os.environ.get("TIMELINE_ROOT", "/data/timelines"))
     app.state.timeline_root.mkdir(parents=True, exist_ok=True)
 
-    model_root = Path(os.environ.get("MODEL_ROOT", "/data/model"))      # new
-
+    model_root = Path(os.environ.get("MODEL_ROOT", "/data/model"))
     app.state.model_network = os.environ.get("MODEL_NETWORK", "toronto-downtown")
     app.state.predictor = Predictor(model_root) if model_root.is_dir() else None
     if app.state.predictor is None:
         logger.warning("MODEL_ROOT not found; predictions disabled")
 
-    yield
+    stop = threading.Event()
+    consumer = None
+    if os.environ.get("SIMULATION_POLLING", "false").lower() == "true":
+        if not app.state.convex_site_url:
+            raise RuntimeError("Polling requires CONVEX_SITE_URL")
+        from traffic_worker.consumer import consume
+        consumer = threading.Thread(target=consume, args=(app.state.convex_site_url, key, stop, f"http://127.0.0.1:{os.environ.get("PORT", "8000")}"), daemon=True)
+        consumer.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        if consumer:
+            consumer.join(timeout=1)
 
 
 app = FastAPI(title="Traffic simulation worker", version="0.1.0", lifespan=lifespan)
@@ -82,6 +95,30 @@ def health() -> dict[str, str]:
 
 @app.post("/simulate", dependencies=[Depends(authenticate)])
 def simulate(payload: SimulationRequest, request: Request) -> dict:
+    try:
+        with claim_receipt(request.app.state.run_root, payload.request_id, payload.model_dump(mode="json")) as receipt:
+            if receipt and receipt.cached:
+                cached = receipt.cached
+                if cached["status"] != 200:
+                    raise HTTPException(cached["status"], cached["body"]["detail"])
+                return cached["body"]
+            try:
+                result = execute_simulation(payload, request)
+            except HTTPException as exc:
+                # Busy/configuration failures are retryable without accepting work.
+                if receipt and exc.status_code not in (429, 503):
+                    receipt.store({"detail": exc.detail}, exc.status_code)
+                raise
+            if receipt:
+                receipt.store(result)
+            return result
+    except ReceiptBusy:
+        raise HTTPException(503, "This run is already in progress", headers={"Retry-After": "2"}) from None
+    except ReceiptConflict:
+        raise HTTPException(409, "Request ID was already used for different settings") from None
+
+
+def execute_simulation(payload: SimulationRequest, request: Request) -> dict:
     if payload.record and not request.app.state.convex_site_url:
         raise HTTPException(503, "Recording uploads require CONVEX_SITE_URL")
     try:
@@ -90,6 +127,12 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
         raise HTTPException(
             404, "Network assets not found or outside NETWORK_ROOT"
         ) from None
+
+    if payload.network_version:
+        try:
+            verify_network_version(request.app.state.network_root, payload.network, payload.network_version)
+        except (OSError, ValueError, TypeError, KeyError):
+            raise HTTPException(409, "Worker network version does not match the project's pinned version") from None
 
     if not request.app.state.slots.acquire(blocking=False):
         raise HTTPException(503, "Worker is busy", headers={"Retry-After": "1"})
@@ -189,6 +232,10 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
                 "filename": "timeline.json.gz",
                 "sample_interval_seconds": payload.sample_interval_seconds,
             }
+        if payload.request_id:
+            result["request_id"] = payload.request_id
+        if payload.network_version:
+            result["network_version"] = payload.network_version
         return result
 
     except subprocess.TimeoutExpired:

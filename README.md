@@ -54,12 +54,14 @@ cd ../worker && uv sync --locked
 1. Follow the [app setup](app/README.md#usage) to run Next.js and Convex.
 2. Follow the [worker setup](worker/README.md#docker) to configure the API key,
    create demo assets with the supplied script, and start the worker with Docker.
-3. The 3D editor opens at [localhost:3000](http://localhost:3000) on a downtown Toronto
+3. Open [localhost:3000](http://localhost:3000), sign in, and create a project
+   from the dashboard. Each project opens the 3D editor on a downtown Toronto
    basemap from MapTiler. Add your MapTiler key to `app/.env.local` as
    `MAPTILER_API_KEY=...` and restart `pnpm dev`. The key stays on the server: the
    browser fetches tiles through `/api/maptiler/`. Import and
    [publish the Toronto network](worker/README.md#publish-map-assets-to-convex)
-   to load its roads from Convex. The editor opens at the imported network extent.
+   before creating projects to pin them to that network version. Use the target
+   button in the editor to view the imported network extent.
 
 ## Editor features
 
@@ -72,9 +74,9 @@ cd ../worker && uv sync --locked
 - **Edit buildings**: click an OpenStreetMap building to turn it into an
   editable scene component. Deleting it removes it from the basemap too. OSM street trees
   aren't in the vector tiles, so trees are added with the Tree tool.
-- **Saved scenes**: new scenes start empty. Existing saves are migrated to remove
-  automatic demo objects while preserving user-added components. The old save is
-  retained under its original local-storage key.
+- **Saved projects**: scenes, editable areas, measurements, and the camera autosave
+  to your account in Convex. Open recent projects from the dashboard. Existing
+  browser-local maps can be imported; their original local saves are retained.
 - **Select, move and resize**: click to select, drag to move, and drag the white handles
   to change length or width. Right-click for exact dimensions, rotation and delete.
   Ctrl+Z undoes.

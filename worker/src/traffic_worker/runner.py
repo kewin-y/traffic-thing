@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from .assets import network_assets
+from .assets import network_assets, verify_network_version
 from .models import SimulationRequest
 
 from .demand import sample_demand
@@ -64,9 +64,9 @@ class _TimelineWriter:
                     "mean_speed_mps": (
                         libsumo.edge.getLastStepMeanSpeed(edge_id)
                         if libsumo.edge.getLastStepVehicleNumber(edge_id)
-                        else libsumo.edge.getMaxSpeed(edge_id)
+                        else max(libsumo.lane.getMaxSpeed(f"{edge_id}_{index}") for index in range(libsumo.edge.getLaneNumber(edge_id)))
                     ),
-                    "free_flow_speed_mps": libsumo.edge.getMaxSpeed(edge_id),
+                    "free_flow_speed_mps": max(libsumo.lane.getMaxSpeed(f"{edge_id}_{index}") for index in range(libsumo.edge.getLaneNumber(edge_id))),
                     "vehicle_count": libsumo.edge.getLastStepVehicleNumber(edge_id),
                 }
                 for edge_id in libsumo.edge.getIDList()
@@ -286,6 +286,8 @@ def run_simulation(
         source, demand = network_assets(
             Path(os.environ.get("NETWORK_ROOT", "/data/networks")), request.network
         )
+        if request.network_version:
+            verify_network_version(Path(os.environ.get("NETWORK_ROOT", "/data/networks")), request.network, request.network_version)
         with TemporaryDirectory(prefix="traffic-worker-") as directory:
             scratch = Path(directory)
             network = _edited_network(request, source, scratch)

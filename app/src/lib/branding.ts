@@ -1,1 +1,1 @@
-export const brandName = "Acme Inc";
+export const brandName = "traffic / lab";

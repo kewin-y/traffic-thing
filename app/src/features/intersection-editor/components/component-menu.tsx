@@ -14,6 +14,7 @@ export function ComponentMenu({
   bounds,
   onUpdate,
   onDelete,
+  onClose,
 }: {
   component: SceneComponent;
   x: number;
@@ -21,6 +22,7 @@ export function ComponentMenu({
   bounds: { width: number; height: number };
   onUpdate: (patch: Partial<SceneComponent>) => void;
   onDelete: () => void;
+  onClose: () => void;
 }) {
   const width = 236;
   const left = Math.max(8, Math.min(x + 8, bounds.width - width - 8));
@@ -29,17 +31,25 @@ export function ComponentMenu({
 
   return (
     <div
-      role="menu"
-      aria-label={describe(component)}
+      role="dialog"
+      aria-label={`${describe(component)} properties`}
       style={{ left, top, width }}
-      className="absolute z-30 rounded-lg border bg-popover p-1.5 text-sm text-popover-foreground shadow-xl"
+      className="absolute z-30 max-h-[calc(100%-1rem)] overflow-y-auto rounded-lg border bg-popover p-1.5 text-sm text-popover-foreground shadow-xl"
       onContextMenu={(event) => event.preventDefault()}
     >
       <div className="flex items-center gap-2 px-1.5 pt-0.5 pb-1.5">
         <ToolIcon kind={component.kind} className="size-6 shrink-0" />
-        <span className="text-xs leading-tight font-medium">
+        <span className="flex-1 text-xs leading-tight font-medium">
           {describe(component)}
         </span>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          aria-label="Close properties"
+          onClick={onClose}
+        >
+          ×
+        </Button>
       </div>
 
       {component.kind === "speed_sign" && (
@@ -124,7 +134,6 @@ export function ComponentMenu({
       )}
       <button
         type="button"
-        role="menuitem"
         onClick={onDelete}
         className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs text-destructive transition-colors hover:bg-destructive/10"
       >

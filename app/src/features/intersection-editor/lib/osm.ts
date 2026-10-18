@@ -1,7 +1,14 @@
-import type { Geometry, Position } from "geojson";
+import type {
+  Feature,
+  Geometry,
+  MultiPolygon,
+  Polygon,
+  Position,
+} from "geojson";
 import type { SceneComponent } from "./components";
-import { toLocal, type Vec2 } from "./geometry";
+import { pointInRing, toLocal, type Vec2 } from "./geometry";
 import { newId } from "./scene";
+import { intersectBuilding } from "./ray-picking";
 
 // Approximate carriageway widths by OpenMapTiles `class`.
 const ROAD_WIDTHS: Record<string, number> = {
@@ -21,28 +28,88 @@ export interface BasemapFeature {
   layer: "building" | "road";
 }
 
-function largestRing(geometry: Geometry): Position[] | null {
-  const rings =
+/** The pointer's ray into the scene, used to tell merged buildings apart. */
+export interface PointerRay {
+  /** Where the ray meets the ground, in local metres. */
+  ground: Vec2;
+  /** The camera's position over the ground, in local metres. */
+  camera: Vec2;
+  /** The camera's height above the ground, in metres. */
+  altitude: number;
+}
+
+function centroid(points: Vec2[]): Vec2 {
+  return [
+    points.reduce((sum, p) => sum + p[0], 0) / points.length,
+    points.reduce((sum, p) => sum + p[1], 0) / points.length,
+  ];
+}
+
+/** Resolve only the polygon actually intersected by the pointer. */
+export function buildingAtRay(feature: BasemapFeature, ray: PointerRay) {
+  const geometry = feature.geometry;
+  const polygons =
     geometry.type === "Polygon"
-      ? [geometry.coordinates[0]]
+      ? [geometry.coordinates]
       : geometry.type === "MultiPolygon"
-        ? geometry.coordinates.map((polygon) => polygon[0])
+        ? geometry.coordinates
         : [];
-  let best: Position[] | null = null;
-  let bestArea = 0;
-  for (const ring of rings) {
-    let area = 0;
-    for (let i = 0; i < ring.length; i++) {
-      const [x1, y1] = ring[i];
-      const [x2, y2] = ring[(i + 1) % ring.length];
-      area += x1 * y2 - x2 * y1;
-    }
-    if (Math.abs(area) > bestArea) {
-      bestArea = Math.abs(area);
-      best = ring;
+  const local = polygons.map((polygon) =>
+    polygon.map((ring) => {
+      const last = ring[ring.length - 1];
+      const open =
+        ring.length > 1 && ring[0][0] === last[0] && ring[0][1] === last[1]
+          ? ring.slice(0, -1)
+          : ring;
+      return open.map(([lng, lat]) => toLocal(lng, lat));
+    }),
+  );
+  const height = Number(feature.properties.render_height ?? 10);
+  const base = Number(feature.properties.render_min_height ?? 0);
+  return intersectBuilding(local, ray, height, base);
+}
+
+/** A converted or deleted basemap building, as it stood in the basemap. */
+export interface HiddenBuilding {
+  osmId: string | number;
+  /** Absolute outline in local metres. */
+  outline: Vec2[];
+}
+
+/**
+ * The buildings that share a basemap feature with hidden ones but were not
+ * themselves converted or deleted. The whole feature is hidden in the basemap,
+ * so these are drawn separately to keep them on the map.
+ */
+export function remainingBuildings(
+  features: Feature[],
+  hidden: HiddenBuilding[],
+): Feature<Polygon>[] {
+  const result: Feature<Polygon>[] = [];
+  for (const feature of features) {
+    const geometry = feature.geometry as Polygon | MultiPolygon;
+    const polygons =
+      geometry.type === "Polygon"
+        ? [geometry.coordinates]
+        : geometry.type === "MultiPolygon"
+          ? geometry.coordinates
+          : [];
+    const own = hidden.filter((h) => h.osmId === feature.id);
+    for (const coordinates of polygons) {
+      const outer = coordinates[0];
+      if (!outer || outer.length < 4) continue;
+      const middle = centroid(
+        outer.slice(0, -1).map(([lng, lat]) => toLocal(lng, lat)),
+      );
+      if (own.some((h) => pointInRing(middle, h.outline))) continue;
+      result.push({
+        type: "Feature",
+        properties: { ...feature.properties, osmId: feature.id },
+        geometry: { type: "Polygon", coordinates },
+      });
     }
   }
-  return best;
+  return result;
 }
 
 function longestLine(geometry: Geometry): Position[] | null {
@@ -76,14 +143,13 @@ function centred(points: Vec2[]): { x: number; y: number; relative: Vec2[] } {
  */
 export function componentFromBasemap(
   feature: BasemapFeature,
+  ray: PointerRay,
 ): SceneComponent | null {
   if (feature.layer === "building") {
-    const ring = largestRing(feature.geometry);
-    if (!ring || ring.length < 4) return null;
-    // Drop the closing point; parts close rings themselves.
-    const local = ring.slice(0, -1).map(([lng, lat]) => toLocal(lng, lat));
-    const { x, y, relative } = centred(local);
     const height = Number(feature.properties.render_height ?? 10) || 10;
+    const ring = buildingAtRay(feature, ray)?.ring;
+    if (!ring || ring.length < 3) return null;
+    const { x, y, relative } = centred(ring);
     return {
       id: newId("building"),
       kind: "building",
@@ -94,6 +160,7 @@ export function componentFromBasemap(
       colour: "#e6dccf",
       footprint: relative,
       osmId: feature.id,
+      osmAt: [x, y],
     };
   }
   const line = longestLine(feature.geometry);

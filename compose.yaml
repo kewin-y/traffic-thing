@@ -9,12 +9,18 @@ services:
       CONVEX_SITE_URL: ${CONVEX_SITE_URL:-}
       NETWORK_ROOT: /data/networks
       TIMELINE_ROOT: /data/timelines
+      SIMULATION_POLLING: ${SIMULATION_POLLING:-true}
+      RUN_ROOT: /data/runs
       SIMULATION_TIMEOUT_SECONDS: ${SIMULATION_TIMEOUT_SECONDS:-120}
       MAX_CONCURRENT_SIMULATIONS: ${MAX_CONCURRENT_SIMULATIONS:-1}
     volumes:
+      - worker-runs:/data/runs
       - type: bind
         source: ./networks
         target: /data/networks
         read_only: true
         bind:
           create_host_path: false
+
+volumes:
+  worker-runs:

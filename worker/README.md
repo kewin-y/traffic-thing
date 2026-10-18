@@ -58,7 +58,9 @@ Copy-Item worker/.env.example .env
 ```
 
 Copy the generated key into `.env` and keep the file out of version control.
-Leave `CONVEX_SITE_URL` empty unless you are configuring [recording uploads](#recordings-in-convex).
+For the HTTP-only demo, leave `CONVEX_SITE_URL` empty and set
+`SIMULATION_POLLING=false` in `.env`. For app simulations, configure the Convex
+URL and enable polling as described in [App simulation queue](#app-simulation-queue).
 
 Create a demo network and demand using the script for your shell (it builds the
 worker image and runs SUMO inside Docker):
@@ -288,3 +290,41 @@ server process (`MAX_CONCURRENT_SIMULATIONS`); excess requests get 503 rather th
 an in-memory queue. Invalid requests or failed simulations return 422; missing
 assets return 404. Run one Uvicorn process per container so its concurrency limit
 corresponds to the container's capacity.
+
+## App simulation queue
+
+The app's Simulate button supports a local Docker worker at `localhost:8000`.
+Because hosted Convex cannot call your localhost, the worker claims work from
+`POST /simulations/claim` on `CONVEX_SITE_URL` and reports results to
+`POST /simulations/complete`. Both endpoints require `WORKER_API_KEY`. Compose
+sets `SIMULATION_POLLING=true`; `CONVEX_SITE_URL` is required in that mode.
+For manual HTTP-only runs with no Convex deployment, set polling to `false`.
+
+Use the existing `worker/.env` configuration explicitly:
+
+```bash
+docker compose --env-file worker/.env up -d --build worker
+```
+
+From `app/`, set `npx convex env set WORKER_URL http://localhost:8000` and set the
+same worker secret on Convex. Published network assets must exist on both Convex
+and the worker. App requests include `network_version` and `request_id`; the
+worker verifies manifest identity plus the actual network/demand checksums.
+Manual requests may omit these optional fields for compatibility.
+
+Runs use baseline roads and demand with no map edits. Successful results and
+terminal errors are stored under `/data/runs` in the `worker-runs` named volume.
+A duplicate request ID reuses that receipt; different settings with the same ID
+are rejected. In-flight duplicates return 503. Preserve this volume across
+restarts; deploy a durable `/data/runs` volume for a hosted worker too.
+Recordings are uploaded to Convex and available from the app's run history.
+Playback and applying editor changes to SUMO are future work.
+
+Run all worker tests in Docker, from the repository root:
+
+```bash
+docker build --target test -t traffic-thing-worker:test worker
+docker run --rm -v "$PWD:/workspace:ro" -e PYTHONPATH=/workspace/worker/src \
+  -e SIMULATION_POLLING=false -w /workspace/worker \
+  traffic-thing-worker:test python -m pytest -q -p no:cacheprovider
+```
