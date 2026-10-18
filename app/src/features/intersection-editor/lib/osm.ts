@@ -8,6 +8,7 @@ import type {
 import type { SceneComponent } from "./components";
 import { pointInRing, toLocal, type Vec2 } from "./geometry";
 import { newId } from "./scene";
+import { intersectBuilding } from "./ray-picking";
 
 // Approximate carriageway widths by OpenMapTiles `class`.
 const ROAD_WIDTHS: Record<string, number> = {
@@ -37,21 +38,6 @@ export interface PointerRay {
   altitude: number;
 }
 
-/** Each polygon's outer ring, in local metres, without the closing point. */
-function outerRings(geometry: Geometry): Vec2[][] {
-  const polygons =
-    geometry.type === "Polygon"
-      ? [geometry.coordinates]
-      : geometry.type === "MultiPolygon"
-        ? geometry.coordinates
-        : [];
-  return polygons
-    .filter((polygon) => polygon[0]?.length >= 4)
-    .map((polygon) =>
-      polygon[0].slice(0, -1).map(([lng, lat]) => toLocal(lng, lat)),
-    );
-}
-
 function centroid(points: Vec2[]): Vec2 {
   return [
     points.reduce((sum, p) => sum + p[0], 0) / points.length,
@@ -59,29 +45,28 @@ function centroid(points: Vec2[]): Vec2 {
   ];
 }
 
-/**
- * The ring the pointer is on. Vector tiles merge many same-height buildings
- * into one feature, so walk the pointer's ray down from roof height and take
- * the first footprint it enters.
- */
-function pickRing(rings: Vec2[][], ray: PointerRay, height: number) {
-  if (rings.length <= 1) return rings[0] ?? null;
-  const [gx, gy] = ray.ground;
-  const [cx, cy] = ray.camera;
-  const steps = 48;
-  for (let i = 0; i <= steps; i++) {
-    const t = Math.min(1, (height * (1 - i / steps)) / ray.altitude);
-    const point: Vec2 = [gx + (cx - gx) * t, gy + (cy - gy) * t];
-    const hit = rings.find((ring) => pointInRing(point, ring));
-    if (hit) return hit;
-  }
-  const distance = (ring: Vec2[]) => {
-    const [x, y] = centroid(ring);
-    return Math.hypot(x - gx, y - gy);
-  };
-  return rings.reduce((best, ring) =>
-    distance(ring) < distance(best) ? ring : best,
+/** Resolve only the polygon actually intersected by the pointer. */
+export function buildingAtRay(feature: BasemapFeature, ray: PointerRay) {
+  const geometry = feature.geometry;
+  const polygons =
+    geometry.type === "Polygon"
+      ? [geometry.coordinates]
+      : geometry.type === "MultiPolygon"
+        ? geometry.coordinates
+        : [];
+  const local = polygons.map((polygon) =>
+    polygon.map((ring) => {
+      const last = ring[ring.length - 1];
+      const open =
+        ring.length > 1 && ring[0][0] === last[0] && ring[0][1] === last[1]
+          ? ring.slice(0, -1)
+          : ring;
+      return open.map(([lng, lat]) => toLocal(lng, lat));
+    }),
   );
+  const height = Number(feature.properties.render_height ?? 10);
+  const base = Number(feature.properties.render_min_height ?? 0);
+  return intersectBuilding(local, ray, height, base);
 }
 
 /** A converted or deleted basemap building, as it stood in the basemap. */
@@ -162,7 +147,7 @@ export function componentFromBasemap(
 ): SceneComponent | null {
   if (feature.layer === "building") {
     const height = Number(feature.properties.render_height ?? 10) || 10;
-    const ring = pickRing(outerRings(feature.geometry), ray, height);
+    const ring = buildingAtRay(feature, ray)?.ring;
     if (!ring || ring.length < 3) return null;
     const { x, y, relative } = centred(ring);
     return {

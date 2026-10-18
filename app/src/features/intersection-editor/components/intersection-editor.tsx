@@ -1,6 +1,7 @@
 "use client";
 
 import "maplibre-gl/dist/maplibre-gl.css";
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ExpressionSpecification,
@@ -31,40 +32,42 @@ import { BUILDING_COLOUR, themeBasemap } from "../lib/basemap-theme";
 import {
   componentFromBasemap,
   remainingBuildings,
-  type BasemapFeature,
   type HiddenBuilding,
   type PointerRay,
 } from "../lib/osm";
 import { renderScene, type SceneLayers } from "../lib/render";
+import { PICK_LAYERS, resolveMapPick, type MapPick } from "../lib/picking";
 import { checkScene, SOURCES, type Issue } from "../lib/rules";
 import { componentFromDrop, describe } from "../lib/scene";
+import {
+  findSceneComponent,
+  updateSceneComponent,
+  removeSceneComponent,
+} from "../lib/scene-edits";
 import { useRoadNetwork } from "../hooks/use-road-network";
 import {
   NETWORK_LAYER,
   NETWORK_SOURCE,
   type LoadedNetwork,
 } from "../lib/network";
-import { loadEditorScene, SCENE_STORAGE_KEY } from "../lib/scene-storage";
+import type { ProjectState } from "../../../../shared/projects";
 import {
   addArea,
   dominantBearing,
-  EDIT_AREAS_STORAGE_KEY,
   fitEdges,
   holeMask,
   isEditable,
-  loadEditAreas,
   unionPath,
   type EditArea,
 } from "../lib/edit-areas";
 import {
   addControlLayers,
+  addEditableControlLayer,
+  drawEditableControls,
   bearingNear,
-  componentFromControl,
-  CONTROL_ICONS_LAYER,
-  describeControl,
+  resolveControl,
   hideControls,
   loadControls,
-  SPEED_LIMITS_LAYER,
   type ControlProperties,
 } from "../lib/traffic-controls";
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
@@ -74,7 +77,6 @@ import { ToolIcon } from "./tool-icon";
 import { NetworkPanel } from "./network-panel";
 import { PANEL_DEFAULT_WIDTH, SidePanel, type PanelTab } from "./side-panel";
 
-const MEASURE_KEY = "traffic-thing:measurements:v1";
 const TOOL_MIME = "application/x-traffic-thing-tool";
 const LAYER_IDS = ["solid", "marking", "ground"] as const;
 const HIGHLIGHT = "#ffc94d";
@@ -229,6 +231,7 @@ function addSceneLayers(map: MapLibreMap): BasemapLayers {
     },
     firstLabel,
   );
+  addEditableControlLayer(map);
   // Measurement lines sit above everything so they are always readable.
   map.addLayer({
     id: "measure",
@@ -266,24 +269,6 @@ function hiddenBuildings(scene: SceneComponent[]): HiddenBuilding[] {
       },
     ];
   });
-}
-
-function load<T>(key: string, fallback: () => T): T {
-  try {
-    const saved = JSON.parse(localStorage.getItem(key) ?? "null");
-    if (Array.isArray(saved) && saved.length) return saved as T;
-  } catch {
-    // Corrupt or unavailable storage: fall back to the default.
-  }
-  return fallback();
-}
-
-function save(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Storage full or disabled; editing still works for this session.
-  }
 }
 
 function easeOutBack(t: number) {
@@ -346,19 +331,22 @@ function pointerRay(
   const fov = (map.getVerticalFieldOfView() * Math.PI) / 180;
   const pitch = (map.getPitch() * Math.PI) / 180;
   const bearing = (map.getBearing() * Math.PI) / 180;
-  const cosLat = Math.cos((center.lat * Math.PI) / 180);
-  // Camera distance to the map centre, in screen pixels and then metres.
+  const lat = (center.lat * Math.PI) / 180;
   const pixels = (0.5 / Math.tan(fov / 2)) * map.getContainer().clientHeight;
-  const metres =
-    pixels * ((40_075_016.686 * cosLat) / (512 * 2 ** map.getZoom()));
-  const back = metres * Math.sin(pitch);
+  const worldSize = 512 * 2 ** map.getZoom();
+  const back = (pixels * Math.sin(pitch)) / worldSize;
+  const centerY = (1 - Math.log(Math.tan(Math.PI / 4 + lat / 2)) / Math.PI) / 2;
+  const cameraY = centerY + back * Math.cos(bearing);
   return {
     ground: toLocal(ground.lng, ground.lat),
     camera: toLocal(
-      center.lng - (back * Math.sin(bearing)) / (111_320 * cosLat),
-      center.lat - (back * Math.cos(bearing)) / 111_320,
+      center.lng - back * Math.sin(bearing) * 360,
+      (Math.atan(Math.sinh(Math.PI * (1 - 2 * cameraY))) * 180) / Math.PI,
     ),
-    altitude: Math.max(1, metres * Math.cos(pitch)),
+    altitude: Math.max(
+      1,
+      (pixels * Math.cos(pitch) * 40_075_016.686 * Math.cos(lat)) / worldSize,
+    ),
   };
 }
 
@@ -370,6 +358,7 @@ interface Snapshot {
 
 interface MenuState {
   id: string;
+  sourceComponent?: SceneComponent;
   x: number;
   y: number;
   /** Map size when opened, so the menu can stay inside it. */
@@ -438,29 +427,50 @@ function resized(
   };
 }
 
-export function IntersectionEditor() {
-  const [scene, setScene] = useState<SceneComponent[]>(loadEditorScene);
-  const [areas, setAreas] = useState<EditArea[]>(loadEditAreas);
+export function IntersectionEditor({
+  initialState,
+  networkReference,
+  onStateChange,
+  historyToolbar,
+  componentsTarget,
+  leftPanelInset = 12,
+}: {
+  initialState: ProjectState;
+  networkReference: { name: string; version: string } | null;
+  onStateChange: (state: ProjectState) => void;
+  historyToolbar?: HTMLElement | null;
+  componentsTarget?: HTMLElement | null;
+  leftPanelInset?: number;
+}) {
+  const [scene, setScene] = useState<SceneComponent[]>(initialState.scene);
+  const [areas, setAreas] = useState<EditArea[]>(initialState.areas);
+  const [camera, setCamera] = useState(initialState.camera);
+  const initialCamera = useRef(initialState.camera);
+
   const [selectingArea, setSelectingArea] = useState(false);
   const [controlsReady, setControlsReady] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelOpen, setPanelOpen] = useState(
+    () => window.matchMedia("(min-width: 1024px)").matches,
+  );
   const [panelTab, setPanelTab] = useState<PanelTab>("tools");
   const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT_WIDTH);
-  const [toolboxOpen, setToolboxOpen] = useState(true);
   const [snip, setSnip] = useState<{
     x0: number;
     y0: number;
     x1: number;
     y1: number;
   } | null>(null);
-  const network = useRoadNetwork();
+  const network = useRoadNetwork(networkReference);
   const [roadSelection, setRoadSelection] = useState<{
     networkId: string;
     edgeId: string;
   } | null>(null);
-  const [measurements, setMeasurements] = useState<Measurement[]>(() =>
-    load(MEASURE_KEY, () => []),
+  const [measurements, setMeasurements] = useState<Measurement[]>(
+    initialState.measurements,
   );
+  useEffect(() => {
+    onStateChange({ ...initialState, scene, areas, measurements, camera });
+  }, [initialState, scene, areas, measurements, camera, onStateChange]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [draggingTool, setDraggingTool] = useState<ComponentKind | null>(null);
@@ -496,6 +506,7 @@ export function IntersectionEditor() {
   const basemapRef = useRef<BasemapLayers>({ roads: [], buildingSource: null });
   const frameRef = useRef<number | null>(null);
   const selectedRef = useRef<string | null>(null);
+  const sourceSelectionRef = useRef<SceneComponent | null>(null);
   const measuringRef = useRef(false);
   const measureStartRef = useRef<string | null>(null);
 
@@ -562,9 +573,19 @@ export function IntersectionEditor() {
   const undo = useCallback(() => travel("undo"), [travel]);
   const redo = useCallback(() => travel("redo"), [travel]);
 
+  useEffect(() => {
+    const container = containerRef.current;
+    const map = mapRef.current;
+    if (!mapReady || !container || !map) return;
+    const observer = new ResizeObserver(() => map.resize());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [mapReady]);
+
   const select = useCallback((id: string | null) => {
     setRoadSelection(null);
     selectedRef.current = id;
+    sourceSelectionRef.current = null;
     setSelected(id);
   }, []);
 
@@ -625,6 +646,7 @@ export function IntersectionEditor() {
       for (const key of Object.keys(layers) as (keyof SceneLayers)[]) {
         map.getSource<GeoJSONSource>(key)?.setData(layers[key]);
       }
+      drawEditableControls(map, sceneRef.current);
       drawMeasurements();
       if (growingRef.current.size)
         frameRef.current = requestAnimationFrame(frame);
@@ -640,12 +662,23 @@ export function IntersectionEditor() {
     (component: SceneComponent): string | null => {
       if (!isEditable(areasRef.current, [component.x, component.y]))
         return READ_ONLY;
-      const next = sceneRef.current.map((c) =>
-        c.id === component.id ? component : c,
+      const isNewOverride = !sceneRef.current.some(
+        (c) => c.id === component.id,
       );
+      const next = updateSceneComponent(sceneRef.current, component, component);
       if (breaksSidewalkRule(next, new Set([component.id])))
         return SIDEWALK_RULE;
       sceneRef.current = next;
+      if (isNewOverride && mapRef.current)
+        hideControls(
+          mapRef.current,
+          next.flatMap((c) =>
+            typeof c.osmId === "string" &&
+            /^(node|way|relation)\//.test(c.osmId)
+              ? [c.osmId]
+              : [],
+          ),
+        );
       markersRef.current
         .get(component.id)
         ?.setLngLat(toLngLat([component.x, component.y]));
@@ -713,17 +746,39 @@ export function IntersectionEditor() {
       map = new maplibregl.Map({
         container: containerRef.current,
         style: basemapStyleUrl(),
-        center: [ORIGIN.lng, ORIGIN.lat],
-        zoom: 17,
-        pitch: 58,
-        bearing: GRID_BEARING - 25,
+        center: [initialCamera.current.lng, initialCamera.current.lat],
+        zoom: initialCamera.current.zoom,
+        pitch: initialCamera.current.pitch,
+        bearing: initialCamera.current.bearing,
         maxPitch: 80,
         minZoom: 13,
         maxZoom: 20,
-        maxBounds: DOWNTOWN_BOUNDS,
+        // A saved camera may lie in the imported network's wider buffer.
+        // Keep it intact until the exact network bounds have loaded.
+        maxBounds: [
+          [
+            Math.min(DOWNTOWN_BOUNDS[0][0], initialCamera.current.lng - 0.001),
+            Math.min(DOWNTOWN_BOUNDS[0][1], initialCamera.current.lat - 0.001),
+          ],
+          [
+            Math.max(DOWNTOWN_BOUNDS[1][0], initialCamera.current.lng + 0.001),
+            Math.max(DOWNTOWN_BOUNDS[1][1], initialCamera.current.lat + 0.001),
+          ],
+        ],
         canvasContextAttributes: { antialias: true },
       });
       mapRef.current = map;
+      map.on("moveend", () => {
+        if (!map) return;
+        const center = map.getCenter();
+        setCamera({
+          lng: center.lng,
+          lat: center.lat,
+          zoom: map.getZoom(),
+          pitch: map.getPitch(),
+          bearing: map.getBearing(),
+        });
+      });
       map.on("error", (e) => {
         // Only a missing style is fatal; a failed icon or tile is not.
         const url = (e.error as { url?: string } | undefined)?.url ?? "";
@@ -734,37 +789,79 @@ export function IntersectionEditor() {
         setMapReady(true);
       });
       map.on("render", drawGrey);
-      const hitAt = (point: { x: number; y: number }) =>
-        map!.queryRenderedFeatures([point.x, point.y], {
-          layers: [...LAYER_IDS],
-        })[0]?.properties?.cid as string | undefined;
-
-      /** Whether the component with this id sits in an editable area. */
-      const editableId = (id: string | undefined) => {
-        const found = sceneRef.current.find((c) => c.id === id);
-        return !!found && isEditable(areasRef.current, [found.x, found.y]);
+      const pickAt = (point: { x: number; y: number }) => {
+        const layers = PICK_LAYERS.filter((layer) => map!.getLayer(layer));
+        if (!layers.length) return null;
+        return resolveMapPick(
+          map!.queryRenderedFeatures([point.x, point.y], { layers }),
+          sceneRef.current,
+          pointerRay(map!, map!.unproject([point.x, point.y])),
+        );
       };
 
-      /** Basemap buildings remain visual components; roads use the SUMO layer. */
-      const basemapAt = (point: {
-        x: number;
-        y: number;
-      }): BasemapFeature | null => {
-        const layers = ["osm-buildings", "osm-remainder"].filter((id) =>
-          map!.getLayer(id),
-        );
-        if (!layers.length) return null;
-        const [hit] = map!.queryRenderedFeatures([point.x, point.y], {
-          layers,
+      const inspect = (
+        pick: MapPick | null,
+        point: { x: number; y: number },
+      ) => {
+        setMenu(null);
+        setIssuePopup(null);
+        if (!pick) {
+          select(null);
+          return;
+        }
+        if (pick.kind === "road") {
+          select(null);
+          if (networkRef.current)
+            setRoadSelection({
+              networkId: networkRef.current.id,
+              edgeId: pick.edgeId,
+            });
+          return;
+        }
+        let component: SceneComponent | undefined;
+        if (pick.kind === "component")
+          component = sceneRef.current.find((c) => c.id === pick.id);
+        else if (pick.kind === "control") {
+          const control = pick.feature;
+          const props = control.properties as unknown as ControlProperties;
+          const ground = map!.unproject([point.x, point.y]);
+          const at =
+            control.geometry.type === "Point"
+              ? {
+                  lng: control.geometry.coordinates[0],
+                  lat: control.geometry.coordinates[1],
+                }
+              : ground;
+          const along =
+            control.geometry.type === "LineString"
+              ? bearingNear(control.geometry.coordinates, ground)
+              : undefined;
+          component = resolveControl(sceneRef.current, props, at, along);
+        } else if (pick.kind === "building") {
+          const original = componentFromBasemap(
+            pick.feature,
+            pointerRay(map!, map!.unproject([point.x, point.y])),
+          );
+          if (original)
+            component =
+              findSceneComponent(sceneRef.current, original) ?? original;
+        }
+        if (!component || component.kind === "removed_osm") {
+          select(null);
+          return;
+        }
+        if (!isEditable(areasRef.current, [component.x, component.y])) {
+          select(null);
+          setNotice(READ_ONLY);
+          return;
+        }
+        select(component.id);
+        sourceSelectionRef.current = component;
+        setMenu({
+          ...menuAt(map!, component.id, point.x, point.y),
+          sourceComponent: component,
         });
-        if (!hit) return null;
-        const properties = hit.properties ?? {};
-        return {
-          id: hit.layer.id === "osm-remainder" ? properties.osmId : hit.id,
-          geometry: hit.geometry,
-          properties,
-          layer: hit.layer.type === "fill-extrusion" ? "building" : "road",
-        };
+        setNotice("Edit its properties, or drag it to move.");
       };
 
       const endDrag = () => {
@@ -775,7 +872,6 @@ export function IntersectionEditor() {
           // Swallow the click that follows this mouseup, but no later one
           // (there is none when the drag ends outside the map).
           justDragged = true;
-          setTimeout(() => (justDragged = false), 0);
         }
         drag = null;
         map!.dragPan.enable();
@@ -783,13 +879,39 @@ export function IntersectionEditor() {
       };
 
       map.on("mousedown", (e) => {
+        // An intentional new press clears suppression; a drag-generated click does not.
+        justDragged = false;
         if (e.originalEvent.button === 2) {
           rightDown = { x: e.point.x, y: e.point.y };
           return;
         }
         if (e.originalEvent.button !== 0 || measuringRef.current) return;
-        const id = hitAt(e.point);
-        const component = sceneRef.current.find((c) => c.id === id);
+        const pick = pickAt(e.point);
+        const sourceSelection = sourceSelectionRef.current;
+        const component =
+          pick?.kind === "component"
+            ? sceneRef.current.find((c) => c.id === pick.id)
+            : sourceSelection &&
+                ((pick?.kind === "control" &&
+                  pick.feature.properties?.ref === sourceSelection.osmId) ||
+                  (pick?.kind === "building" &&
+                    sourceSelection.kind === "building" &&
+                    componentFromBasemap(
+                      pick.feature,
+                      pointerRay(map!, e.lngLat),
+                    )?.osmAt?.every(
+                      (v, i) =>
+                        Math.abs(
+                          v -
+                            (sourceSelection.osmAt ?? [
+                              sourceSelection.x,
+                              sourceSelection.y,
+                            ])[i],
+                        ) < 0.15,
+                    )))
+              ? sourceSelection
+              : undefined;
+        const id = component?.id;
         // Only an already-selected component drags; elsewhere the map pans.
         if (!component || id !== selectedRef.current) return;
         e.preventDefault();
@@ -807,26 +929,39 @@ export function IntersectionEditor() {
 
       map.on("mousemove", (e) => {
         if (!drag) {
-          const id = hitAt(e.point);
+          const pick = pickAt(e.point);
+          const id =
+            pick?.kind === "component"
+              ? pick.id
+              : pick?.kind === "control" &&
+                  pick.feature.properties?.ref ===
+                    sourceSelectionRef.current?.osmId
+                ? sourceSelectionRef.current?.id
+                : null;
           map!.getCanvas().style.cursor = measuringRef.current
             ? "crosshair"
             : id && id === selectedRef.current
               ? "move"
-              : id
+              : pick
                 ? "pointer"
-                : map!.getLayer(NETWORK_LAYER) &&
-                    map!.queryRenderedFeatures(e.point, {
-                      layers: [NETWORK_LAYER],
-                    }).length
-                  ? "pointer"
-                  : "";
+                : "";
           return;
         }
         const [x, y] = toLocal(e.lngLat.lng, e.lngLat.lat);
         const round = (v: number) => Math.round(v * 10) / 10;
         const id = drag.id;
-        const component = sceneRef.current.find((c) => c.id === id);
+        const component =
+          sceneRef.current.find((c) => c.id === id) ??
+          (sourceSelectionRef.current?.id === id
+            ? sourceSelectionRef.current
+            : undefined);
         if (!component) return;
+        const grabbedAt = map!.project(toLngLat(drag.grab));
+        if (
+          !drag.moved &&
+          Math.hypot(e.point.x - grabbedAt.x, e.point.y - grabbedAt.y) < 3
+        )
+          return;
         const moved = {
           ...component,
           x: round(drag.origin[0] + x - drag.grab[0]),
@@ -853,12 +988,7 @@ export function IntersectionEditor() {
         ) {
           return;
         }
-        const id = hitAt(e.point);
-        const editable = editableId(id);
-        if (id && !editable) setNotice(READ_ONLY);
-        setMenu(
-          id && editable ? menuAt(e.target, id, e.point.x, e.point.y) : null,
-        );
+        inspect(pickAt(e.point), e.point);
       });
       map.on("click", (e) => {
         setMenu(null);
@@ -867,7 +997,8 @@ export function IntersectionEditor() {
           justDragged = false;
           return;
         }
-        let id = hitAt(e.point) ?? null;
+        const pick = pickAt(e.point);
+        const id = pick?.kind === "component" ? pick.id : null;
 
         if (measuringRef.current) {
           if (!id) {
@@ -897,96 +1028,7 @@ export function IntersectionEditor() {
           return;
         }
 
-        // Real-world signals and signs: inside an editable area, make one
-        // editable; elsewhere, say what it is.
-        if (!id) {
-          const controlLayers = [
-            CONTROL_ICONS_LAYER,
-            SPEED_LIMITS_LAYER,
-          ].filter((layer) => map!.getLayer(layer));
-          const control = controlLayers.length
-            ? map!.queryRenderedFeatures(e.point, { layers: controlLayers })[0]
-            : undefined;
-          if (control) {
-            const props = control.properties as ControlProperties;
-            const at =
-              control.geometry.type === "Point"
-                ? {
-                    lng: control.geometry.coordinates[0],
-                    lat: control.geometry.coordinates[1],
-                  }
-                : e.lngLat;
-            const along =
-              control.geometry.type === "LineString"
-                ? bearingNear(control.geometry.coordinates, e.lngLat)
-                : undefined;
-            const created = componentFromControl(props, at, along);
-            if (!isEditable(areasRef.current, [created.x, created.y])) {
-              select(null);
-              setNotice(
-                `${describeControl(props)}, from OpenStreetMap. Select this area to edit it.`,
-              );
-              return;
-            }
-            commit([...sceneRef.current, created]);
-            select(created.id);
-            setNotice(
-              `${describeControl(props)} is now editable. Drag it, or right-click for options.`,
-            );
-            return;
-          }
-        }
-
-        // Imported roads retain their SUMO identity instead of becoming scenery.
-        if (!id) {
-          const layers = [
-            "osm-buildings",
-            "osm-remainder",
-            NETWORK_LAYER,
-          ].filter((layer) => map!.getLayer(layer));
-          const hit = layers.length
-            ? map!.queryRenderedFeatures(e.point, { layers })[0]
-            : null;
-          if (hit?.layer.id === NETWORK_LAYER && networkRef.current) {
-            const edgeId = hit.properties?.edge_id;
-            if (typeof edgeId === "string") {
-              select(null);
-              setRoadSelection({ networkId: networkRef.current.id, edgeId });
-              return;
-            }
-          }
-          const feature = basemapAt(e.point);
-          const converted =
-            feature &&
-            componentFromBasemap(feature, pointerRay(map!, e.lngLat));
-          if (
-            converted &&
-            !isEditable(areasRef.current, [converted.x, converted.y])
-          ) {
-            select(null);
-            setNotice(READ_ONLY);
-            return;
-          }
-          if (converted) {
-            commit([...sceneRef.current, converted]);
-            id = converted.id;
-            setNotice(
-              `This ${converted.kind} from the map is now editable. Drag, resize or right-click it.`,
-            );
-            select(id);
-            return;
-          }
-        }
-        if (id && !editableId(id)) {
-          select(null);
-          setNotice(READ_ONLY);
-          return;
-        }
-        select(id);
-        if (id)
-          setNotice(
-            "Selected. Drag it to move, or drag the white handles to resize.",
-          );
+        inspect(pick, e.point);
       });
       map.on("dragstart", () => setMenu(null));
       map.on("zoomstart", () => setMenu(null));
@@ -1028,24 +1070,22 @@ export function IntersectionEditor() {
     hideControls(
       map,
       scene.flatMap((c) =>
-        typeof c.osmId === "string" && /^(node|relation)\//.test(c.osmId)
+        typeof c.osmId === "string" && /^(node|way|relation)\//.test(c.osmId)
           ? [c.osmId]
           : [],
       ),
     );
   }, [scene, controlsReady]);
 
-  // Outline, unmask and persist the editable areas whenever they change.
+  // Outline and unmask the editable areas whenever they change.
   useEffect(() => {
     areasRef.current = areas;
-    save(EDIT_AREAS_STORAGE_KEY, areas);
     drawGrey();
   }, [areas, mapReady, drawGrey]);
 
-  // Redraw and persist whenever the scene changes.
+  // Redraw whenever the scene changes.
   useEffect(() => {
     if (mapReady && frameRef.current === null) draw();
-    save(SCENE_STORAGE_KEY, scene);
   }, [scene, mapReady, draw]);
 
   useEffect(() => {
@@ -1065,7 +1105,6 @@ export function IntersectionEditor() {
         Math.max(DOWNTOWN_BOUNDS[1][1], data.bounds[1][1] + 0.01),
       ],
     ]);
-    showNetwork(map, data);
     return () => {
       networkRef.current = null;
       if (mapRef.current !== map) return;
@@ -1163,7 +1202,6 @@ export function IntersectionEditor() {
   // Measurement lines and their labels.
   useEffect(() => {
     measurementsRef.current = measurements;
-    save(MEASURE_KEY, measurements);
     const map = mapRef.current;
     const lib = libRef.current;
     if (!mapReady || !map || !lib) return;
@@ -1222,8 +1260,8 @@ export function IntersectionEditor() {
       if (!marker) {
         const element = document.createElement("div");
         element.className =
-          "cursor-context-menu rounded-[3px] border border-neutral-900 bg-white px-1 py-px text-center font-sans text-[8px] leading-tight font-bold text-neutral-900 shadow-sm select-none";
-        element.addEventListener("contextmenu", (event) => {
+          "cursor-pointer rounded-[3px] border border-neutral-900 bg-white px-1 py-px text-center font-sans text-[8px] leading-tight font-bold text-neutral-900 shadow-sm select-none";
+        const openProperties = (event: MouseEvent) => {
           event.preventDefault();
           event.stopPropagation();
           const current = sceneRef.current.find((c) => c.id === sign.id);
@@ -1235,8 +1273,11 @@ export function IntersectionEditor() {
             return;
           }
           const point = map.project(marker!.getLngLat());
+          select(sign.id);
           setMenu(menuAt(map, sign.id, point.x, point.y));
-        });
+        };
+        element.addEventListener("click", openProperties);
+        element.addEventListener("contextmenu", openProperties);
         marker = new lib.Marker({ element, anchor: "bottom", offset: [0, -22] })
           .setLngLat(toLngLat([sign.x, sign.y]))
           .addTo(map);
@@ -1252,7 +1293,7 @@ export function IntersectionEditor() {
       );
       marker.setLngLat(toLngLat([sign.x, sign.y]));
     }
-  }, [scene, mapReady]);
+  }, [scene, mapReady, select]);
 
   // Resize handles on the selected component's ends and sides.
   const selectedComponent = useMemo(
@@ -1379,16 +1420,17 @@ export function IntersectionEditor() {
   }, [notice]);
 
   const menuComponent = useMemo(
-    () => (menu ? scene.find((c) => c.id === menu.id) : undefined),
+    () =>
+      menu
+        ? (scene.find((c) => c.id === menu.id) ?? menu.sourceComponent)
+        : undefined,
     [menu, scene],
   );
 
   const update = useCallback(
-    (id: string, patch: Partial<SceneComponent>) => {
-      const next = sceneRef.current.map((c) =>
-        c.id === id ? { ...c, ...patch } : c,
-      );
-      if (breaksSidewalkRule(next, new Set([id]))) {
+    (component: SceneComponent, patch: Partial<SceneComponent>) => {
+      const next = updateSceneComponent(sceneRef.current, component, patch);
+      if (breaksSidewalkRule(next, new Set([component.id]))) {
         setNotice(SIDEWALK_RULE);
         return;
       }
@@ -1398,28 +1440,15 @@ export function IntersectionEditor() {
   );
 
   const remove = useCallback(
-    (id: string) => {
-      // A deleted map feature leaves a placeholder so the basemap keeps it hidden.
-      commit(
-        sceneRef.current.flatMap((c) =>
-          c.id !== id
-            ? [c]
-            : c.osmId === undefined
-              ? []
-              : [
-                  {
-                    id: c.id,
-                    kind: "removed_osm" as const,
-                    x: c.x,
-                    y: c.y,
-                    rotation: 0,
-                    osmId: c.osmId,
-                    footprint: c.footprint,
-                    osmAt: c.osmAt ?? (c.footprint ? [c.x, c.y] : undefined),
-                  },
-                ],
-        ),
-      );
+    (id: string, sourceComponent?: SceneComponent) => {
+      const component =
+        sceneRef.current.find((c) => c.id === id) ??
+        sourceComponent ??
+        (sourceSelectionRef.current?.id === id
+          ? sourceSelectionRef.current
+          : undefined);
+      if (!component) return;
+      commit(removeSceneComponent(sceneRef.current, component));
       setMenu(null);
       setIssuePopup(null);
       if (selectedRef.current === id) select(null);
@@ -1456,7 +1485,7 @@ export function IntersectionEditor() {
       }
       const target = menu?.id ?? selected;
       if ((event.key === "Delete" || event.key === "Backspace") && target)
-        remove(target);
+        remove(target, menu?.sourceComponent);
       const key = event.key.toLowerCase();
       if (event.ctrlKey || event.metaKey) {
         if (key === "y" || (key === "z" && event.shiftKey)) {
@@ -1702,7 +1731,8 @@ export function IntersectionEditor() {
     <div
       role="toolbar"
       aria-label="Map view"
-      className="absolute bottom-3 left-3 z-10 flex overflow-hidden rounded-lg border bg-background/95 shadow-lg backdrop-blur"
+      className="absolute bottom-3 z-10 flex overflow-hidden rounded-lg border bg-background/95 shadow-lg backdrop-blur"
+      style={{ left: leftPanelInset }}
     >
       <Button
         variant="ghost"
@@ -1794,7 +1824,7 @@ export function IntersectionEditor() {
 
   return (
     <div
-      className="relative h-full min-h-[560px] overflow-clip rounded-xl border bg-muted"
+      className="relative h-full min-h-0 overflow-clip bg-muted"
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes(TOOL_MIME)) {
           event.preventDefault();
@@ -1912,70 +1942,50 @@ export function IntersectionEditor() {
         </div>
       )}
 
-      {!toolboxOpen && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="absolute top-3 left-3 z-10 bg-background shadow-lg dark:bg-background"
-          onClick={() => setToolboxOpen(true)}
-        >
-          ＋ Add Components
-        </Button>
-      )}
-      <aside
-        data-toolbox
-        aria-label="Component tools"
-        hidden={!toolboxOpen}
-        className="absolute top-3 left-3 z-10 max-h-[calc(100%-5rem)] w-[150px] overflow-y-auto rounded-lg border bg-background/95 p-1.5 shadow-lg backdrop-blur"
-      >
-        <div className="flex items-center justify-between pb-1 pl-1">
-          <p className="text-xs font-semibold">Add Components</p>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Close Add Components"
-            title="Close"
-            className="size-6"
-            onClick={() => setToolboxOpen(false)}
-          >
-            ×
-          </Button>
-        </div>
-        {groups.map((group) => (
-          <div key={group} className="pb-1.5">
-            <p className="px-1 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
-              {group}
+      {componentsTarget &&
+        createPortal(
+          <div className="p-3">
+            <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
+              Drag a component onto an editable area of the map.
             </p>
-            <div className="grid grid-cols-3 gap-0.5">
-              {TOOLS.filter((tool) => tool.group === group).map((tool) => (
-                <div
-                  key={tool.kind}
-                  draggable
-                  title={`${tool.label}: ${tool.hint}`}
-                  onDragStart={(event) => {
-                    event.dataTransfer.setData(TOOL_MIME, tool.kind);
-                    event.dataTransfer.effectAllowed = "copy";
-                    const icon = event.currentTarget.querySelector("svg");
-                    if (icon) event.dataTransfer.setDragImage(icon, 14, 14);
-                    setDraggingTool(tool.kind);
-                    setMenu(null);
-                  }}
-                  onDragEnd={() => setDraggingTool(null)}
-                  className="flex cursor-grab flex-col items-center gap-0.5 rounded-md border border-transparent p-1 text-center transition hover:border-border hover:bg-muted active:cursor-grabbing"
-                >
-                  <ToolIcon kind={tool.kind} className="size-6" />
-                  <span className="text-[8.5px] leading-tight">
-                    {tool.label}
-                  </span>
+            {groups.map((group) => (
+              <div key={group} className="pb-5">
+                <p className="px-1 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                  {group}
+                </p>
+                <div className="grid grid-cols-3 gap-2">
+                  {TOOLS.filter((tool) => tool.group === group).map((tool) => (
+                    <div
+                      key={tool.kind}
+                      draggable
+                      title={`${tool.label}: ${tool.hint}`}
+                      onDragStart={(event) => {
+                        event.dataTransfer.setData(TOOL_MIME, tool.kind);
+                        event.dataTransfer.effectAllowed = "copy";
+                        const icon = event.currentTarget.querySelector("svg");
+                        if (icon) event.dataTransfer.setDragImage(icon, 14, 14);
+                        setDraggingTool(tool.kind);
+                        setMenu(null);
+                      }}
+                      onDragEnd={() => setDraggingTool(null)}
+                      className="flex cursor-grab flex-col items-center gap-0.5 rounded-md border border-transparent p-1 text-center transition hover:border-border hover:bg-muted active:cursor-grabbing"
+                    >
+                      <ToolIcon kind={tool.kind} className="size-7" />
+                      <span className="text-[11px] leading-tight">
+                        {tool.label}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </aside>
+              </div>
+            ))}
+          </div>,
+          componentsTarget,
+        )}
 
       <NetworkPanel
         network={network}
+        leftInset={leftPanelInset}
         selectedRoad={selectedRoad}
         onClearSelection={() => setRoadSelection(null)}
         panelInset={panelOpen ? panelWidth + 12 : null}
@@ -2107,8 +2117,9 @@ export function IntersectionEditor() {
           x={menu.x}
           y={menu.y}
           bounds={menu.bounds}
-          onUpdate={(patch) => update(menuComponent.id, patch)}
-          onDelete={() => remove(menuComponent.id)}
+          onClose={() => setMenu(null)}
+          onUpdate={(patch) => update(menuComponent, patch)}
+          onDelete={() => remove(menuComponent.id, menuComponent)}
         />
       )}
 
@@ -2152,6 +2163,30 @@ export function IntersectionEditor() {
         </div>
       )}
 
+      {historyToolbar &&
+        createPortal(
+          <>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!history.undo}
+              onClick={undo}
+              title="Undo (Ctrl+Z)"
+            >
+              Undo
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={!history.redo}
+              onClick={redo}
+              title="Redo (Ctrl+Y)"
+            >
+              Redo
+            </Button>
+          </>,
+          historyToolbar,
+        )}
       {viewControls}
 
       {basemapFailed && !mapReady && (

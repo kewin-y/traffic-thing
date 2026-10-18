@@ -7,7 +7,7 @@ import {
   validateAssets,
 } from "./lib/assets";
 
-async function authenticateWorker(request: Request): Promise<Response | null> {
+export async function authenticateWorker(request: Request): Promise<Response | null> {
   const apiKey = process.env.WORKER_API_KEY;
   if (!apiKey) {
     return Response.json(

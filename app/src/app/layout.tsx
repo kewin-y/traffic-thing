@@ -23,10 +23,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: `${brandName} — A simple SaaS starter`,
+    default: `${brandName} — Street design & simulation`,
     template: `%s | ${brandName}`,
   },
-  description: "A thoughtful starting point for your next SaaS application.",
+  description:
+    "Design streets, save map projects, and explore baseline traffic simulations.",
 };
 
 export default function RootLayout({

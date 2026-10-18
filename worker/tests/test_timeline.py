@@ -30,14 +30,19 @@ class FakeEdges:
     def getLastStepVehicleNumber(self, edge_id: str):
         return 1
 
-    def getMaxSpeed(self, edge_id: str):
+    def getLaneNumber(self, edge_id: str):
+        return 1
+
+
+class FakeLanes:
+    def getMaxSpeed(self, lane_id: str):
         return 10.0
 
 
 def test_timeline_is_valid_compressed_json_and_excludes_internal_edges(tmp_path: Path):
     path = tmp_path / "timeline.json.gz"
     writer = _TimelineWriter(path, sample_interval_seconds=5)
-    libsumo = SimpleNamespace(vehicle=FakeVehicles(), edge=FakeEdges())
+    libsumo = SimpleNamespace(vehicle=FakeVehicles(), edge=FakeEdges(), lane=FakeLanes())
 
     writer.write_sample(libsumo, time_seconds=5)
     writer.finish()

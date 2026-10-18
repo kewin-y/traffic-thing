@@ -3,13 +3,15 @@
 import { useEffect, useReducer, useState } from "react";
 import { useConvexAuth, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { loadNetwork, NETWORK_NAME, type LoadedNetwork } from "../lib/network";
+import { loadNetwork, type LoadedNetwork } from "../lib/network";
 
-export function useRoadNetwork() {
+export function useRoadNetwork(
+  reference: { name: string; version: string } | null,
+) {
   const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
   const published = useQuery(
     api.networks.queries.get,
-    isAuthenticated ? { name: NETWORK_NAME } : "skip",
+    isAuthenticated && reference ? reference : "skip",
   );
   const [attempt, retry] = useReducer((n: number) => n + 1, 0);
   const [result, setResult] = useState<{
@@ -42,7 +44,7 @@ export function useRoadNetwork() {
       ? "loading"
       : !isAuthenticated
         ? "signed-out"
-        : published === null
+        : !reference || published === null
           ? "missing"
           : current?.error
             ? "error"

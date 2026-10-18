@@ -1,36 +1,9 @@
 "use client";
-
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-
+import { TabbedPanel } from "./tabbed-panel";
+export { PANEL_DEFAULT_WIDTH } from "./tabbed-panel";
 export type PanelTab = "tools" | "chat";
-
-/** Limits, in pixels, for dragging the panel wider or narrower. */
-export const PANEL_MIN_WIDTH = 240;
-export const PANEL_MAX_WIDTH = 640;
-export const PANEL_DEFAULT_WIDTH = 288;
-/** Map space the panel always leaves free when dragged wide. */
-const MAP_MIN_WIDTH = 240;
-const KEY_STEP = 16;
-
-interface Props {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  tab: PanelTab;
-  onTabChange: (tab: PanelTab) => void;
-  width: number;
-  onWidthChange: (width: number) => void;
-  /** Contents of the Tools tab. */
-  tools: React.ReactNode;
-}
-
-const TABS: { id: PanelTab; label: string }[] = [
-  { id: "tools", label: "Tools" },
-  { id: "chat", label: "Chat" },
-];
-
-/** Slide-out panel on the right of the map, with Tools and Chat tabs. */
 export function SidePanel({
   open,
   onOpenChange,
@@ -39,105 +12,38 @@ export function SidePanel({
   width,
   onWidthChange,
   tools,
-}: Props) {
-  const panelRef = useRef<HTMLElement>(null);
-
-  /** Clamp a width to the limits and to the map's own size. */
-  function resizeTo(next: number) {
-    const mapWidth = panelRef.current?.parentElement?.clientWidth ?? Infinity;
-    const max = Math.min(PANEL_MAX_WIDTH, mapWidth - MAP_MIN_WIDTH);
-    onWidthChange(Math.round(Math.max(PANEL_MIN_WIDTH, Math.min(max, next))));
-  }
-
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  tab: PanelTab;
+  onTabChange: (tab: PanelTab) => void;
+  width: number;
+  onWidthChange: (width: number) => void;
+  tools: React.ReactNode;
+}) {
   return (
-    <aside
-      ref={panelRef}
-      aria-label="Planning panel"
-      style={{ width }}
-      className={cn(
-        "absolute inset-y-0 right-0 z-20 flex flex-col border-l bg-background/95 shadow-xl backdrop-blur transition-transform duration-300 ease-out",
-        !open && "translate-x-full",
-      )}
-    >
-      {open && (
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize panel"
-          aria-valuemin={PANEL_MIN_WIDTH}
-          aria-valuemax={PANEL_MAX_WIDTH}
-          aria-valuenow={width}
-          tabIndex={0}
-          title="Drag to resize"
-          className="absolute inset-y-0 left-0 z-10 w-2 -translate-x-1/2 cursor-ew-resize touch-none transition-colors hover:bg-primary/30 focus-visible:bg-primary/30 focus-visible:outline-none"
-          onPointerDown={(event) => {
-            event.preventDefault();
-            event.currentTarget.setPointerCapture(event.pointerId);
-          }}
-          onPointerMove={(event) => {
-            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-            const right =
-              panelRef.current?.parentElement?.getBoundingClientRect().right;
-            if (right !== undefined) resizeTo(right - event.clientX);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowLeft") resizeTo(width + KEY_STEP);
-            else if (event.key === "ArrowRight") resizeTo(width - KEY_STEP);
-          }}
-        />
-      )}
-      <button
-        type="button"
-        aria-label={open ? "Hide panel" : "Show panel"}
-        aria-expanded={open}
-        title={open ? "Hide panel" : "Show panel"}
-        onClick={() => onOpenChange(!open)}
-        className="absolute top-1/2 -left-7 flex h-16 w-7 -translate-y-1/2 items-center justify-center rounded-l-lg border border-r-0 bg-background/95 text-lg text-muted-foreground shadow-md backdrop-blur hover:text-foreground"
-      >
-        {open ? "›" : "‹"}
-      </button>
-
-      <div
-        role="tablist"
-        aria-label="Panel sections"
-        className="m-3 mb-0 grid grid-cols-2 rounded-lg bg-muted p-1"
-      >
-        {TABS.map(({ id, label }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            id={`panel-tab-${id}`}
-            aria-selected={tab === id}
-            aria-controls={`panel-${id}`}
-            onClick={() => onTabChange(id)}
-            className={cn(
-              "rounded-md py-1.5 text-sm font-medium transition",
-              tab === id
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      <div
-        role="tabpanel"
-        id={`panel-${tab}`}
-        aria-labelledby={`panel-tab-${tab}`}
-        className="flex min-h-0 flex-1 flex-col"
-      >
-        {tab === "tools" ? (
-          <div className="flex flex-col gap-1.5 overflow-y-auto p-3">
-            {tools}
-          </div>
-        ) : (
-          <ChatTab />
-        )}
-      </div>
-    </aside>
+    <TabbedPanel
+      side="right"
+      label="Planning panel"
+      open={open}
+      onOpenChange={onOpenChange}
+      value={tab}
+      onValueChange={onTabChange}
+      width={width}
+      onWidthChange={onWidthChange}
+      tabs={[
+        {
+          value: "tools",
+          label: "Tools",
+          content: (
+            <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-3">
+              {tools}
+            </div>
+          ),
+        },
+        { value: "chat", label: "Chat", content: <ChatTab /> },
+      ]}
+    />
   );
 }
 

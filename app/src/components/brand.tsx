@@ -3,8 +3,6 @@
 import { mergeProps } from "@base-ui/react/merge-props";
 import { useRender } from "@base-ui/react/use-render";
 import { cn } from "@/lib/utils";
-import { CatIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { brandName } from "@/lib/branding";
 
 export function Brand({
@@ -23,7 +21,7 @@ export function Brand({
             aria-hidden="true"
             className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
           >
-            <HugeiconsIcon icon={CatIcon} className="size-4" />
+            <span className="text-lg font-semibold">t</span>
           </div>
           <span className="truncate font-medium text-md leading-tight">
             {brandName}
