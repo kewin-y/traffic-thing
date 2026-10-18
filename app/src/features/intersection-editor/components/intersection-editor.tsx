@@ -77,7 +77,6 @@ import { ToolIcon } from "./tool-icon";
 import { NetworkPanel } from "./network-panel";
 import { PANEL_DEFAULT_WIDTH, SidePanel, type PanelTab } from "./side-panel";
 
-const TOOL_MIME = "application/x-traffic-thing-tool";
 const LAYER_IDS = ["solid", "marking", "ground"] as const;
 const HIGHLIGHT = "#ffc94d";
 const MEASURE_COLOUR = "#e8338b";
@@ -226,6 +225,33 @@ function addSceneLayers(map: MapLibreMap): BasemapLayers {
         "fill-extrusion-color": ["get", "colour"],
         "fill-extrusion-base": ["get", "base"],
         "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-vertical-gradient": true,
+      },
+    },
+    firstLabel,
+  );
+  // Translucent copies of the scene layers for the placement ghost.
+  for (const id of ["ghost", "ghost-solid"] as const)
+    map.addSource(id, { type: "geojson", data: EMPTY });
+  map.addLayer(
+    {
+      id: "ghost-fill",
+      type: "fill",
+      source: "ghost",
+      paint: { "fill-color": ["get", "colour"], "fill-opacity": 0.45 },
+    },
+    "solid",
+  );
+  map.addLayer(
+    {
+      id: "ghost-solid",
+      type: "fill-extrusion",
+      source: "ghost-solid",
+      paint: {
+        "fill-extrusion-color": ["get", "colour"],
+        "fill-extrusion-base": ["get", "base"],
+        "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-opacity": 0.45,
         "fill-extrusion-vertical-gradient": true,
       },
     },
@@ -473,7 +499,7 @@ export function IntersectionEditor({
   }, [initialState, scene, areas, measurements, camera, onStateChange]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [draggingTool, setDraggingTool] = useState<ComponentKind | null>(null);
+  const [activeTool, setActiveTool] = useState<ComponentKind | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [basemapFailed, setBasemapFailed] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -507,6 +533,8 @@ export function IntersectionEditor({
   const frameRef = useRef<number | null>(null);
   const selectedRef = useRef<string | null>(null);
   const sourceSelectionRef = useRef<SceneComponent | null>(null);
+  const activeToolRef = useRef<ComponentKind | null>(null);
+  const ghostRef = useRef<SceneComponent | null>(null);
   const measuringRef = useRef(false);
   const measureStartRef = useRef<string | null>(null);
 
@@ -654,6 +682,24 @@ export function IntersectionEditor({
     [drawMeasurements],
   );
 
+  /** Show the armed tool's component under the pointer, or clear it. */
+  const drawGhost = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const ghost = ghostRef.current;
+    const layers = ghost ? renderScene([ghost], new Map()) : null;
+    const flat = layers
+      ? {
+          type: "FeatureCollection" as const,
+          features: [...layers.ground.features, ...layers.marking.features],
+        }
+      : EMPTY;
+    map.getSource<GeoJSONSource>("ghost")?.setData(flat);
+    map.getSource<GeoJSONSource>("ghost-solid")?.setData(
+      layers ? layers.solid : EMPTY,
+    );
+  }, []);
+
   /**
    * Apply a live (uncommitted) change during a drag. Returns why the change
    * was refused, or null when it was applied.
@@ -689,6 +735,60 @@ export function IntersectionEditor({
       return null;
     },
     [draw],
+  );
+
+  const toggleMeasuring = useCallback(() => {
+    const next = !measuringRef.current;
+    measuringRef.current = next;
+    measureStartRef.current = null;
+    setMeasuring(next);
+    select(null);
+    setNotice(next ? "Measure: click one component, then another." : null);
+  }, [select]);
+
+  /** Arm a toolbox tool for click-to-place, or disarm with null. */
+  const armTool = useCallback(
+    (kind: ComponentKind | null) => {
+      activeToolRef.current = kind;
+      setActiveTool(kind);
+      setMenu(null);
+      setIssuePopup(null);
+      ghostRef.current = null;
+      drawGhost();
+      if (!kind) return;
+      select(null);
+      if (measuringRef.current) toggleMeasuring();
+      setSelectingArea(false);
+      setSnip(null);
+      setNotice(
+        `${TOOL_BY_KIND[kind].label}: click the map to place it. Esc to cancel.`,
+      );
+    },
+    [drawGhost, select, toggleMeasuring],
+  );
+
+  /** Place the armed tool's component at the clicked map position. */
+  const placeComponent = useCallback(
+    (kind: ComponentKind, lngLat: { lng: number; lat: number }) => {
+      const [x, y] = toLocal(lngLat.lng, lngLat.lat);
+      if (!isEditable(areasRef.current, [x, y])) {
+        setNotice(READ_ONLY);
+        return;
+      }
+      const created = componentFromDrop(kind, x, y);
+      const next = [...sceneRef.current, created];
+      if (breaksSidewalkRule(next, new Set([created.id]))) {
+        setNotice(SIDEWALK_RULE);
+        return;
+      }
+      growingRef.current.set(created.id, performance.now());
+      commit(next);
+      select(created.id);
+      setNotice(
+        `Added ${describe(created).toLowerCase()}. Click again to place another, or press Esc to finish.`,
+      );
+    },
+    [commit, select],
   );
 
   /**
@@ -929,6 +1029,13 @@ export function IntersectionEditor({
 
       map.on("mousemove", (e) => {
         if (!drag) {
+          if (activeToolRef.current) {
+            const [x, y] = toLocal(e.lngLat.lng, e.lngLat.lat);
+            ghostRef.current = componentFromDrop(activeToolRef.current, x, y);
+            drawGhost();
+            map!.getCanvas().style.cursor = "crosshair";
+            return;
+          }
           const pick = pickAt(e.point);
           const id =
             pick?.kind === "component"
@@ -1028,6 +1135,11 @@ export function IntersectionEditor({
           return;
         }
 
+        if (activeToolRef.current) {
+          placeComponent(activeToolRef.current, e.lngLat);
+          return;
+        }
+
         inspect(pick, e.point);
       });
       map.on("dragstart", () => setMenu(null));
@@ -1042,7 +1154,7 @@ export function IntersectionEditor({
       map?.remove();
       mapRef.current = null;
     };
-  }, [commit, draw, drawGrey, preview, remember, select]);
+  }, [armTool, commit, draw, drawGhost, drawGrey, placeComponent, preview, remember, select]);
 
   // Real-world traffic controls, as a reference layer under the scene.
   useEffect(() => {
@@ -1456,15 +1568,6 @@ export function IntersectionEditor({
     [commit, select],
   );
 
-  const toggleMeasuring = useCallback(() => {
-    const next = !measuringRef.current;
-    measuringRef.current = next;
-    measureStartRef.current = null;
-    setMeasuring(next);
-    select(null);
-    setNotice(next ? "Measure: click one component, then another." : null);
-  }, [select]);
-
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       // Typing in a field (such as the chat box) must not edit the map.
@@ -1479,6 +1582,7 @@ export function IntersectionEditor({
         setMenu(null);
         setIssuePopup(null);
         select(null);
+        armTool(null);
         if (measuringRef.current) toggleMeasuring();
         setSelectingArea(false);
         setSnip(null);
@@ -1499,7 +1603,7 @@ export function IntersectionEditor({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, selected, remove, undo, redo, select, toggleMeasuring]);
+  }, [armTool, menu, selected, remove, undo, redo, select, toggleMeasuring]);
 
   /** Look straight down on everything editable, or on downtown if nothing is. */
   function birdsEye() {
@@ -1676,38 +1780,6 @@ export function IntersectionEditor({
     );
   }
 
-  function onDrop(event: React.DragEvent<HTMLDivElement>) {
-    const kind = event.dataTransfer.getData(TOOL_MIME) as ComponentKind;
-    setDraggingTool(null);
-    const map = mapRef.current;
-    const container = containerRef.current;
-    if (!kind || !TOOL_BY_KIND[kind] || !map || !container) return;
-    if ((event.target as HTMLElement).closest("[data-toolbox]")) return;
-    event.preventDefault();
-    const box = container.getBoundingClientRect();
-    const { lng, lat } = map.unproject([
-      event.clientX - box.left,
-      event.clientY - box.top,
-    ]);
-    const [x, y] = toLocal(lng, lat);
-    if (!isEditable(areasRef.current, [x, y])) {
-      setNotice(READ_ONLY);
-      return;
-    }
-    const created = componentFromDrop(kind, x, y);
-    const next = [...sceneRef.current, created];
-    if (breaksSidewalkRule(next, new Set([created.id]))) {
-      setNotice(SIDEWALK_RULE);
-      return;
-    }
-    growingRef.current.set(created.id, performance.now());
-    commit(next);
-    select(created.id);
-    setNotice(
-      `Added ${describe(created).toLowerCase()}. Drag the handles to resize it.`,
-    );
-  }
-
   /**
    * Turn a quarter at a time between the four directions of Toronto's street
    * grid (whose "north" runs up Yonge Street), so streets stay parallel to
@@ -1825,13 +1897,6 @@ export function IntersectionEditor({
   return (
     <div
       className="relative h-full min-h-0 overflow-clip bg-muted"
-      onDragOver={(event) => {
-        if (event.dataTransfer.types.includes(TOOL_MIME)) {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "copy";
-        }
-      }}
-      onDrop={onDrop}
       onContextMenu={(event) => event.preventDefault()}
     >
       <div
@@ -1946,7 +2011,8 @@ export function IntersectionEditor({
         createPortal(
           <div className="p-3">
             <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
-              Drag a component onto an editable area of the map.
+              Pick a component, then click an editable area of the map to place
+              it. Esc cancels.
             </p>
             {groups.map((group) => (
               <div key={group} className="pb-5">
@@ -1954,28 +2020,28 @@ export function IntersectionEditor({
                   {group}
                 </p>
                 <div className="grid grid-cols-3 gap-2">
-                  {TOOLS.filter((tool) => tool.group === group).map((tool) => (
-                    <div
-                      key={tool.kind}
-                      draggable
-                      title={`${tool.label}: ${tool.hint}`}
-                      onDragStart={(event) => {
-                        event.dataTransfer.setData(TOOL_MIME, tool.kind);
-                        event.dataTransfer.effectAllowed = "copy";
-                        const icon = event.currentTarget.querySelector("svg");
-                        if (icon) event.dataTransfer.setDragImage(icon, 14, 14);
-                        setDraggingTool(tool.kind);
-                        setMenu(null);
-                      }}
-                      onDragEnd={() => setDraggingTool(null)}
-                      className="flex cursor-grab flex-col items-center gap-0.5 rounded-md border border-transparent p-1 text-center transition hover:border-border hover:bg-muted active:cursor-grabbing"
-                    >
-                      <ToolIcon kind={tool.kind} className="size-7" />
-                      <span className="text-[11px] leading-tight">
-                        {tool.label}
-                      </span>
-                    </div>
-                  ))}
+                  {TOOLS.filter((tool) => tool.group === group).map((tool) => {
+                    const armed = activeTool === tool.kind;
+                    return (
+                      <button
+                        key={tool.kind}
+                        type="button"
+                        aria-pressed={armed}
+                        title={`${tool.label}: ${tool.hint}`}
+                        onClick={() => armTool(armed ? null : tool.kind)}
+                        className={`flex flex-col items-center gap-0.5 rounded-md border p-1 text-center transition ${
+                          armed
+                            ? "border-border bg-muted"
+                            : "border-transparent hover:border-border hover:bg-muted"
+                        }`}
+                      >
+                        <ToolIcon kind={tool.kind} className="size-7" />
+                        <span className="text-[11px] leading-tight">
+                          {tool.label}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -2031,6 +2097,7 @@ export function IntersectionEditor({
                 setSnip(null);
                 setMenu(null);
                 select(null);
+                armTool(null);
                 if (measuringRef.current) toggleMeasuring();
                 setNotice(
                   next
@@ -2106,10 +2173,6 @@ export function IntersectionEditor({
           </>
         }
       />
-
-      {draggingTool && (
-        <div className="pointer-events-none absolute inset-2 rounded-lg border-2 border-dashed border-white/80" />
-      )}
 
       {menu && menuComponent && (
         <ComponentMenu

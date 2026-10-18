@@ -65,8 +65,8 @@ cd ../worker && uv sync --locked
 
 ## Editor features
 
-- **Add**: drag tools from the left panel onto the map. Lanes and crosswalks snap to the
-  Spadina & College sample intersection; elsewhere they're placed where you drop them.
+- **Add**: pick a tool from the left panel, then click the map to place it. Lanes and crosswalks snap to the
+  Spadina & College sample intersection; elsewhere they're placed where you click.
 - **Inspect imported roads**: teal roads come from the published SUMO network.
   Click a segment to highlight one direction of travel and inspect its lane count,
   speed limit, and length. Selection retains its network version and SUMO edge ID;
