@@ -1,1 +1,1 @@
-export const brandName = "traffic / lab";
+export const brandName = "FlowState";

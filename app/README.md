@@ -1,4 +1,4 @@
-# Traffic app
+# FlowState app
 
 Next.js, React, MapLibre, and Convex with email/password sign-in and saved map projects.
 See the [worker README](../worker/README.md) for simulation setup.

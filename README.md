@@ -1,4 +1,4 @@
-# Traffic Thing
+# FlowState
 
 Edit road layouts, save map projects, and run SUMO traffic simulations.
 

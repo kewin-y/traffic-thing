@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { UserMenu } from "@/features/auth/components/user-menu";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Brand } from "@/components/brand";
+import { brandName } from "@/lib/branding";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const isProject = usePathname().startsWith("/project/");
@@ -24,7 +25,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-4">
             <Brand
               render={
-                <Link href="/dashboard" aria-label="traffic / lab home" />
+                <Link href="/dashboard" aria-label={`${brandName} home`} />
               }
             />
             <span aria-hidden className="h-5 w-px bg-border" />

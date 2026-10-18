@@ -21,7 +21,7 @@ export function Brand({
             aria-hidden="true"
             className="flex aspect-square size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
           >
-            <span className="text-lg font-semibold">t</span>
+            <span className="text-lg font-semibold">F</span>
           </div>
           <span className="truncate font-medium text-md leading-tight">
             {brandName}
