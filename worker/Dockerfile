@@ -59,7 +59,7 @@ COPY --from=build /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH" \
     NETWORK_ROOT=/data/networks \
     TIMELINE_ROOT=/data/timelines \
-    SIMULATION_TIMEOUT_SECONDS=120 \
+    SIMULATION_TIMEOUT_SECONDS=400 \
     MAX_CONCURRENT_SIMULATIONS=1
 USER 10001:10001
 EXPOSE 8000

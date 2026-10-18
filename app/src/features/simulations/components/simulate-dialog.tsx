@@ -58,7 +58,7 @@ export function SimulateDialog({
     defaultValues: {
       durationSeconds: String(defaultSimulationSettings.durationSeconds),
       seed: String(defaultSimulationSettings.seed),
-      record: false,
+      record: defaultSimulationSettings.record,
     },
     validators: { onChange: formSchema },
     onSubmit: async ({ value }) => {

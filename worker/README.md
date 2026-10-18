@@ -256,8 +256,40 @@ The Convex key is a deployment environment variable; adding it to
 `app/.env.local` does not configure the endpoint. After editing the root `.env`,
 run `docker compose up -d worker` to apply the worker environment.
 
-Add `"record": true` to a simulation request to record a compressed JSON timeline.
-`sample_interval_seconds` defaults to 5 (allowed range: 1–60). After simulation,
+### Speed limits, people, cyclists and e-scooters
+
+Published networks are imported for cars. Each run derives a network that:
+
+- keeps every posted OpenStreetMap `maxspeed`, and sets streets without one
+  (which netconvert would give 50–100 km/h typemap speeds) to Toronto's 40 km/h
+  default; expressways, ramps and living streets keep their typemap speeds. This
+  needs `source.osm.xml` beside the network; without it speeds are unchanged.
+- adds sidewalks and crossings (`netconvert --sidewalks.guess --crossings.guess`).
+
+It is cached by input content in `WALKABLE_NETWORK_CACHE` (default: the system
+temp directory). Drivers keep to the limit (`--default.speeddev 0`).
+
+Walking, cycling and e-scooter trips are derived from the car demand: 2, 1/3 and
+0.1 per car trip, departing with it, between streets weighted by how many car
+routes use them (see `active_demand.py`). Busy streets and periods therefore get
+more people. Trips are routed with `duarouter`; unroutable generated trips are
+dropped, while the car demand keeps its strict route checks. Result metrics
+(`completed`, `departed`, averages…) count cars only.
+
+Runs first simulate up to 600 seconds of unmeasured warm-up (never past the
+demand's 3,600-second end), so streets already carry traffic when the requested
+window starts. `warmup_seconds` in the result reports it; counts, averages and the
+recording cover only the window.
+
+### Recording
+
+Add `"record": true` to a simulation request to record a compressed JSON timeline
+(`traffic-worker-timeline-v2`). Each frame lists every car, cyclist, scooter rider
+and pedestrian as flat `[agent, longitude, latitude, heading_degrees, speed_mps]`
+rows, every second (fewer for long runs: at most 600 frames). Every
+`sample_interval_seconds` (default 5, allowed 1–60) a frame also lists edges with
+vehicles on them as `[edge, mean_speed_mps, vehicle_count]`. Agent IDs and kinds,
+and edge IDs with free-flow speeds, are written once at the end. After simulation,
 the worker calls `POST /networks/upload-url` with
 `Authorization: Bearer <WORKER_API_KEY>` to obtain `{ "uploadUrl": "..." }`, then
 streams `timeline.json.gz` to that URL as `application/gzip`. The upload URL
@@ -284,7 +316,7 @@ Requests without recording do not need a Convex connection.
 
 Requests are synchronous; no job is persisted. Convex job dispatch, durable
 statuses, recovery, and playback are not connected yet. The default
-wall-clock limit is 120 seconds (`SIMULATION_TIMEOUT_SECONDS`); timeout returns
+wall-clock limit is 400 seconds (`SIMULATION_TIMEOUT_SECONDS`, kept under the 420-second Convex push timeout); timeout returns
 504 and terminates the simulation process group. Capacity defaults to one run per
 server process (`MAX_CONCURRENT_SIMULATIONS`); excess requests get 503 rather than
 an in-memory queue. Invalid requests or failed simulations return 422; missing

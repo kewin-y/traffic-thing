@@ -71,6 +71,9 @@ import {
   type ControlProperties,
 } from "../lib/traffic-controls";
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
+import { makeFrame } from "../lib/street-life/frame";
+import { usePlayback, type PlaybackRun } from "../hooks/use-playback";
+import { PlaybackBar, PlaybackNotice } from "./playback-bar";
 import { componentsOverlap, gapBetween } from "../lib/spatial";
 import { ComponentMenu } from "./component-menu";
 import { ToolIcon } from "./tool-icon";
@@ -82,6 +85,7 @@ const LAYER_IDS = ["solid", "marking", "ground"] as const;
 const HIGHLIGHT = "#ffc94d";
 const MEASURE_COLOUR = "#e8338b";
 const GROW_MS = 380;
+const STREET_LIFE_FRAME = makeFrame(ORIGIN.lng, ORIGIN.lat);
 const SIDEWALK_RULE = "Sidewalks can't overlap roads or lanes.";
 const READ_ONLY =
   "This part of the map is greyed out. Use Select area to make it editable.";
@@ -434,6 +438,7 @@ export function IntersectionEditor({
   historyToolbar,
   componentsTarget,
   leftPanelInset = 12,
+  playbackRun = null,
 }: {
   initialState: ProjectState;
   networkReference: { name: string; version: string } | null;
@@ -441,6 +446,11 @@ export function IntersectionEditor({
   historyToolbar?: HTMLElement | null;
   componentsTarget?: HTMLElement | null;
   leftPanelInset?: number;
+  /**
+   * The run shown in the history panel, played back on the map; "no-runs"
+   * while the history is open but empty.
+   */
+  playbackRun?: PlaybackRun | "no-runs" | null;
 }) {
   const [scene, setScene] = useState<SceneComponent[]>(initialState.scene);
   const [areas, setAreas] = useState<EditArea[]>(initialState.areas);
@@ -1112,6 +1122,19 @@ export function IntersectionEditor({
       if (map.getSource(NETWORK_SOURCE)) map.removeSource(NETWORK_SOURCE);
     };
   }, [network.data, mapReady]);
+
+  // Recorded runs play back inside the editable areas.
+  const playback = usePlayback({
+    map: mapReady ? mapRef.current : null,
+    mapReady,
+    run: playbackRun === "no-runs" ? null : playbackRun,
+    scene,
+    frame: STREET_LIFE_FRAME,
+  });
+  const readPlaybackStats = useCallback(
+    () => playback.scene.stats,
+    [playback.scene],
+  );
 
   const selectedRoad = useMemo(() => {
     if (!network.data || roadSelection?.networkId !== network.data.id)
@@ -1817,6 +1840,48 @@ export function IntersectionEditor({
     </div>
   );
 
+  const playbackLeft = leftPanelInset;
+  const playbackRight = panelOpen ? panelWidth + 12 : 12;
+  const playbackStatus =
+    playbackRun === "no-runs" ? "no-runs" : playback.status;
+  const playbackControls =
+    playbackStatus === "ready" && playback.clock ? (
+      <PlaybackBar
+        clock={playback.clock}
+        stats={readPlaybackStats}
+        left={playbackLeft}
+        right={playbackRight}
+      />
+    ) : playbackStatus !== "off" ? (
+      <PlaybackNotice
+        left={playbackLeft}
+        right={playbackRight}
+        duration={
+          playbackRun && playbackRun !== "no-runs"
+            ? playbackRun.durationSeconds
+            : null
+        }
+        busy={playbackStatus === "simulating" || playbackStatus === "loading"}
+      >
+        {
+          {
+            "no-runs":
+              "Run a simulation to watch it here, with every car, cyclist and pedestrian.",
+            simulating:
+              "Simulating… the timeline unlocks when the run finishes.",
+            loading: "Loading the recording…",
+            failed: "This run failed, so there is nothing to play back.",
+            "load-error": "Couldn’t load the recording. Please try again.",
+            unrecorded:
+              "This run wasn’t recorded. Run the simulation again (recording is now on by default) to watch it.",
+            unsupported:
+              "This recording is from an older worker. Run the simulation again to watch it.",
+            ready: null,
+          }[playbackStatus]
+        }
+      </PlaybackNotice>
+    ) : null;
+
   const groups = useMemo(
     () => [...new Set(TOOLS.map((tool) => tool.group))],
     [],
@@ -2188,6 +2253,7 @@ export function IntersectionEditor({
           historyToolbar,
         )}
       {viewControls}
+      {playbackControls}
 
       {basemapFailed && !mapReady && (
         <div

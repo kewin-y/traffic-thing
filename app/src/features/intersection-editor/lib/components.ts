@@ -15,6 +15,8 @@ export type ComponentKind =
   | "building"
   | "green_area"
   | "bench"
+  | "circle_bench"
+  | "tree"
   | "traffic_light"
   | "stop_sign"
   | "yield_sign"
@@ -103,6 +105,26 @@ export function isResizable(c: SceneComponent) {
     c.kind !== "streetcar"
   );
 }
+
+export const CIRCLE_BENCH_DIAMETER = 4.4;
+/** Default crown diameter of a tree, in metres. */
+export const TREE_CROWN = 6;
+
+/**
+ * Widths ("thickness") that can be set from a component's menu, in metres:
+ * lanes and roads across the travelled way, sidewalks and crosswalks across
+ * the walking way.
+ */
+export const THICKNESS: Partial<
+  Record<ComponentKind, { min: number; max: number; step: number }>
+> = {
+  car_lane: { min: 2.5, max: 5, step: 0.1 },
+  bike_lane: { min: 1.2, max: 3, step: 0.1 },
+  streetcar_lane: { min: 3, max: 4.5, step: 0.1 },
+  road: { min: 3, max: 40, step: 0.5 },
+  sidewalk: { min: 1.5, max: 10, step: 0.25 },
+  crosswalk: { min: 2, max: 8, step: 0.5 },
+};
 
 export const LANE_WIDTHS: Record<LaneKind, number> = {
   car_lane: 3.3,
@@ -252,6 +274,20 @@ export const TOOLS: ToolDefinition[] = [
     defaults: {},
   },
   {
+    kind: "tree",
+    label: "Tree",
+    group: "Streetscape",
+    hint: "Street or park tree; people rest in its shade",
+    defaults: { width: TREE_CROWN },
+  },
+  {
+    kind: "circle_bench",
+    label: "Circle bench",
+    group: "Streetscape",
+    hint: "Ring of seats around a planter, facing in for conversation",
+    defaults: { width: CIRCLE_BENCH_DIAMETER },
+  },
+  {
     kind: "building",
     label: "Building",
     group: "Streetscape",
@@ -341,6 +377,87 @@ function box(
   colour: string,
 ): Part {
   return { ring: rect(cx, cy, w, d), layer: "solid", base, height, colour };
+}
+
+/** Radius of a circle bench's seat line, where people sit. */
+export function circleSeatRadius(diameter: number) {
+  return diameter / 2 - 0.3;
+}
+
+/** Seats per circle bench of the given diameter, about 0.9 m apart. */
+export function circleSeatCount(diameter: number) {
+  return Math.max(
+    8,
+    Math.round((2 * Math.PI * circleSeatRadius(diameter)) / 0.9),
+  );
+}
+
+/** A ring of seats with a backrest outside and a planted centre. */
+function circleBenchParts(diameter: number): Part[] {
+  const seat = circleSeatRadius(diameter);
+  const n = circleSeatCount(diameter);
+  const chord = ((2 * Math.PI * seat) / n) * 1.04;
+  const parts: Part[] = [];
+  for (let i = 0; i < n; i++) {
+    const angle = (i / n) * Math.PI * 2;
+    const degrees = (angle * 180) / Math.PI + 90;
+    const at = (r: number): [number, number] => [
+      Math.cos(angle) * r,
+      Math.sin(angle) * r,
+    ];
+    const [sx, sy] = at(seat);
+    parts.push({
+      ring: place(rect(0, 0, chord, 0.45), sx, sy, degrees),
+      layer: "solid",
+      base: 0.42,
+      height: 0.5,
+      colour: COLOURS.wood,
+    });
+    const [bx, by] = at(seat + 0.26);
+    parts.push({
+      ring: place(rect(0, 0, chord * 1.05, 0.08), bx, by, degrees),
+      layer: "solid",
+      base: 0.5,
+      height: 0.95,
+      colour: shade(COLOURS.wood, -0.12),
+    });
+    if (i % 2 === 0)
+      parts.push({
+        ring: place(rect(0, 0, 0.1, 0.35), sx, sy, degrees),
+        layer: "solid",
+        base: 0,
+        height: 0.42,
+        colour: COLOURS.metal,
+      });
+  }
+  const planter = seat - 0.55;
+  if (planter > 0.4) {
+    parts.push(
+      {
+        ring: polygon(0, 0, planter, 20),
+        layer: "solid",
+        base: 0,
+        height: 0.45,
+        colour: COLOURS.concrete,
+      },
+      {
+        ring: polygon(0, 0, planter - 0.1, 20),
+        layer: "solid",
+        base: 0.45,
+        height: 0.48,
+        colour: COLOURS.grass,
+      },
+      box(0, 0, 0.24, 0.24, 0.48, 2.3, "#6b4a2b"),
+      {
+        ring: polygon(0, 0, Math.min(1.5, planter + 0.3), 9),
+        layer: "solid",
+        base: 2.1,
+        height: 3.9,
+        colour: "#4f9a4a",
+      },
+    );
+  }
+  return parts;
 }
 
 /** Geometry in the component's own frame, before rotation and translation. */
@@ -498,6 +615,29 @@ function localParts(c: SceneComponent): Part[] {
       }
       return parts;
     }
+    case "circle_bench":
+      return circleBenchParts(c.width ?? CIRCLE_BENCH_DIAMETER);
+    case "tree": {
+      const crown = (c.width ?? TREE_CROWN) / 2;
+      const base = 1.8 + crown * 0.25;
+      return [
+        box(0, 0, 0.35, 0.35, 0, base + 0.6, "#6b4a2b"),
+        {
+          ring: polygon(0, 0, crown, 10),
+          layer: "solid",
+          base,
+          height: base + crown * 1.1,
+          colour: "#4f9a4a",
+        },
+        {
+          ring: polygon(0, 0, crown * 0.62, 8, 0.3),
+          layer: "solid",
+          base: base + crown * 1.1,
+          height: base + crown * 1.6,
+          colour: "#63ad57",
+        },
+      ];
+    }
     case "bench":
       return [
         box(-0.75, 0, 0.12, 0.45, 0, 0.42, COLOURS.metal),
@@ -602,6 +742,8 @@ function pathRects(path: Vec2[], width: number): Vec2[][] {
 // Plan-view size used for clearance and measurement of small objects.
 const POINT_SIZES: Partial<Record<ComponentKind, [number, number]>> = {
   bench: [1.8, 0.5],
+  // Only the trunk claims ground; people and benches may sit under the crown.
+  tree: [0.5, 0.5],
   traffic_light: [0.3, 0.3],
   stop_sign: [0.2, 0.2],
   yield_sign: [0.2, 0.2],
@@ -626,6 +768,10 @@ export function outlines(c: SceneComponent): Vec2[][] {
     );
   }
   if (c.footprint) return [place(c.footprint, c.x, c.y, c.rotation)];
+  if (c.kind === "circle_bench") {
+    const d = c.width ?? CIRCLE_BENCH_DIAMETER;
+    return [place(polygon(0, 0, d / 2, 12), c.x, c.y, c.rotation)];
+  }
   const size =
     c.length !== undefined && c.width !== undefined
       ? [c.length, c.width]

@@ -20,6 +20,8 @@ export const componentKinds = [
   "building",
   "green_area",
   "bench",
+  "circle_bench",
+  "tree",
   "traffic_light",
   "stop_sign",
   "yield_sign",

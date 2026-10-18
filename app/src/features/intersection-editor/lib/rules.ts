@@ -50,9 +50,11 @@ export interface Issue {
   source: SourceKey;
 }
 
-const FURNITURE: ComponentKind[] = ["bench", "transit_shelter"];
+const FURNITURE: ComponentKind[] = ["bench", "circle_bench", "transit_shelter"];
 const STREET_OBJECTS: ComponentKind[] = [
   "bench",
+  "circle_bench",
+  "tree",
   "transit_shelter",
   "streetlight",
   "stop_sign",

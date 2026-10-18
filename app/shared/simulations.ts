@@ -17,7 +17,8 @@ export type SimulationSettings = z.infer<typeof simulationSettingsSchema>;
 export const defaultSimulationSettings: SimulationSettings = {
   durationSeconds: 200,
   seed: 42,
-  record: false,
+  // Recordings drive playback in the history panel.
+  record: true,
 };
 const metric = z.number().finite().nonnegative().nullable();
 export const workerResultSchema = z.object({

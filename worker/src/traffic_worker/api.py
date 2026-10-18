@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     if not key:
         raise RuntimeError("WORKER_API_KEY must be configured")
 
-    timeout = int(os.environ.get("SIMULATION_TIMEOUT_SECONDS", "120"))
+    timeout = int(os.environ.get("SIMULATION_TIMEOUT_SECONDS", "400"))
     concurrency = int(os.environ.get("MAX_CONCURRENT_SIMULATIONS", "1"))
 
     if timeout <= 0 or concurrency <= 0:
