@@ -22,3 +22,8 @@ dist/
 .env
 .env.*
 !.env.example
+
+# Trained model artifacts (downloaded, not committed)
+street_segments.csv
+traffic_gcn_checkpoint.pt
+traffic_gcn_meta.json
