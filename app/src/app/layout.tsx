@@ -27,7 +27,7 @@ export const metadata: Metadata = {
     template: `%s | ${brandName}`,
   },
   description:
-    "Design streets, save map projects, and explore baseline traffic simulations.",
+    "Design streets, save map projects, and explore traffic simulations.",
 };
 
 export default function RootLayout({

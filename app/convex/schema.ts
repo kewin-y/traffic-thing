@@ -1,3 +1,4 @@
+import { assistantTables } from "./assistant/schema";
 import { defineSchema } from "convex/server";
 import { authTables } from "@convex-dev/auth/server";
 import { numbersTables } from "./numbers/schema";
@@ -10,6 +11,7 @@ import { simulationsTables } from "./simulations/schema";
 // Convex Auth requires indexes defined on `authTables` kept as-is.
 export default defineSchema({
   ...authTables,
+  ...assistantTables,
   ...numbersTables,
   ...networksTables,
   ...projectsTables,

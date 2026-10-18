@@ -8,6 +8,10 @@
  * @module
  */
 
+import type * as assistant_actions from "../assistant/actions.js";
+import type * as assistant_agent from "../assistant/agent.js";
+import type * as assistant_mutations from "../assistant/mutations.js";
+import type * as assistant_queries from "../assistant/queries.js";
 import type * as auth from "../auth.js";
 import type * as http from "../http.js";
 import type * as networks_httpActions from "../networks/httpActions.js";
@@ -36,6 +40,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  "assistant/actions": typeof assistant_actions;
+  "assistant/agent": typeof assistant_agent;
+  "assistant/mutations": typeof assistant_mutations;
+  "assistant/queries": typeof assistant_queries;
   auth: typeof auth;
   http: typeof http;
   "networks/httpActions": typeof networks_httpActions;
@@ -86,4 +94,5 @@ export declare const internal: FilterApi<
 
 export declare const components: {
   simulationPool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"simulationPool">;
+  agent: import("@convex-dev/agent/_generated/component.js").ComponentApi<"agent">;
 };

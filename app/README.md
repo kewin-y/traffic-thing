@@ -76,14 +76,16 @@ choosing Load latest to discard them. Project state is validated with Zod and
 Convex validators, with a 750,000-byte save limit below Convex's document limit.
 Large geometry will need separate records or file storage in a future version.
 
-## Baseline simulations
+## Traffic simulations
 
 Use **Simulate** in a saved project to choose duration (1–3600 seconds), a seed,
 and an optional recording. Runs retain an immutable copy of the full map state,
 its revision, settings, and pinned network version. Live history shows queue
-status, failures, metrics, and snapshot/recording downloads. The baseline uses
-published roads and synthetic demand with `edits: []`; buildings, heights, signs,
-and other editor changes are preserved for later support.
+status, failures, metrics, and snapshot/recording downloads. Runs use published
+roads and synthetic demand. Deleting an imported road closes that direction of
+travel, and changing an imported road’s width changes its lane count. Other
+placed objects, including benches, buildings, and signs, are retained in the
+snapshot but do not affect these runs.
 
 For local development, from `app/`:
 
@@ -113,3 +115,28 @@ network and demand checksums, caps execution time, and stores receipts in the
 Claims expire after ten minutes and are recovered when a worker next polls;
 execution/delivery failures have a maximum of five attempts. Do not remove the
 receipt volume while runs are active.
+
+## Planning assistant
+
+The editor’s Chat tab streams replies and keeps a separate conversation for each
+project. The assistant can read the current scene, open editable areas, and place
+or delete components. Each completed turn applies its edits as one undo step and
+uses the existing autosave. If you edit the map while a reply is generating, its
+edits are rejected so your newer changes are preserved. Leaving or reloading the
+project keeps the conversation but does not replay its map edits.
+
+Create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey).
+From this directory, configure it on the Convex deployment:
+
+```bash
+npx convex env set GOOGLE_GENERATIVE_AI_API_KEY '<your Google AI Studio API key>'
+# Optional; defaults to gemini-3.8-flash:
+npx convex env set CHAT_MODEL '<Gemini model ID>'
+```
+
+Keep these variables on Convex rather than in browser environment variables.
+Use Node.js 22 or newer for the AI SDK and Agent component. Run
+`pnpm exec convex dev --once` after installing dependencies to deploy the component
+and chat functions. Without a provider key, Chat displays a configuration error.
+The assistant offers qualitative planning advice; it does not run simulations or
+inspect basemap features that have not been imported into the editable scene.

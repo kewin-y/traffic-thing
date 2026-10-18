@@ -109,7 +109,7 @@ export function SimulationHistory({
                 <span className="min-w-0 flex-1">
                   <span className="flex items-baseline justify-between gap-2">
                     <span className="text-xs font-medium">
-                      Baseline · {run.settings.durationSeconds}s
+                      SUMO · {run.settings.durationSeconds}s
                     </span>
                     <span className="text-[10px] text-muted-foreground">
                       {statusLabel}
