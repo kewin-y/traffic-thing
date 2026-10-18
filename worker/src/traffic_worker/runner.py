@@ -16,6 +16,7 @@ from typing import Any
 from .assets import network_assets, verify_network_version
 from .models import SimulationRequest
 
+from .demand import sample_demand
 
 class _TimelineWriter:
     """Stream sampled simulation state into a compressed JSON timeline."""
@@ -273,11 +274,13 @@ def _simulate(
 def run_simulation(
     request: SimulationRequest, timeline_path: Path | None = None
 ) -> dict[str, Any]:
-    """Run trusted mounted demand without rewriting, repairing, or rerouting it.
+    """Run mounted demand, or model-sampled demand when the API provided targets.
 
-    Native SUMO behavior explicitly encoded in demand (such as trips needing an
-    initial route or equipped rerouting devices) is preserved. Invalid fixed
-    routes fail; no routing tool or ignore-errors option repairs them.
+    Without PREDICTED_EDGEDATA_PATH the mounted demand is used as-is: trusted,
+    not rewritten, repaired, or rerouted; invalid fixed routes fail; no routing
+    tool or ignore-errors option repairs them. With PREDICTED_EDGEDATA_PATH the
+    mounted demand is only a candidate route pool: routeSampler re-samples it to
+    match the API's predicted per-edge counts.
     """
     with _stdout_to_stderr():
         source, demand = network_assets(
@@ -288,8 +291,14 @@ def run_simulation(
         with TemporaryDirectory(prefix="traffic-worker-") as directory:
             scratch = Path(directory)
             network = _edited_network(request, source, scratch)
-            return _simulate(request, network, demand, scratch, timeline_path)
-
+            edgedata = os.environ.get("PREDICTED_EDGEDATA_PATH")
+            if edgedata:
+                sampled = scratch / "predicted_demand.rou.xml"
+                sample_demand(demand, Path(edgedata), request.duration_seconds, request.seed, sampled)
+                demand = sampled
+            result = _simulate(request, network, demand, scratch, timeline_path)
+            result["demand_source"] = "model" if edgedata else "mounted"
+            return result
 
 def main() -> int:
     request = SimulationRequest.model_validate_json(sys.stdin.buffer.read())
