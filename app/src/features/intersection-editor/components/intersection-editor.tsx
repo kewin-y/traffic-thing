@@ -1057,6 +1057,93 @@ export function IntersectionEditor({
         map!.getCanvas().style.cursor = "";
       };
 
+      // Resizing by dragging the selected component's edge itself: the whole
+      // perimeter responds, within a screen-pixel band of the outline.
+      let resize: {
+        id: string;
+        handle: Handle;
+        before: SceneComponent[];
+        moved: boolean;
+        blocked: boolean;
+      } | null = null;
+      const RESIZE_BAND = 10;
+      const perimeterHit = (point: { x: number; y: number }) => {
+        const id = selectedRef.current;
+        if (!id || measuringRef.current || activeToolRef.current || drag)
+          return null;
+        const component = sceneRef.current.find((c) => c.id === id);
+        if (!component || !isResizable(component)) return null;
+        const r = (component.rotation * Math.PI) / 180;
+        const cos = Math.cos(r);
+        const sin = Math.sin(r);
+        const hw = (component.length ?? 0) / 2;
+        const hh = (component.width ?? 0) / 2;
+        // Each edge: NW→NE is north (side+), NE→SE east (end+), and so on.
+        const local: [number, number][] = [
+          [-hw, hh],
+          [hw, hh],
+          [hw, -hh],
+          [-hw, -hh],
+        ];
+        const hand: Handle[] = ["side+", "end+", "side-", "end-"];
+        let best: { handle: Handle; cursor: string; distance: number } | null =
+          null;
+        for (let i = 0; i < 4; i++) {
+          const a = map!.project(
+            toLngLat([
+              component.x + local[i][0] * cos - local[i][1] * sin,
+              component.y + local[i][0] * sin + local[i][1] * cos,
+            ]),
+          );
+          const j = (i + 1) % 4;
+          const b = map!.project(
+            toLngLat([
+              component.x + local[j][0] * cos - local[j][1] * sin,
+              component.y + local[j][0] * sin + local[j][1] * cos,
+            ]),
+          );
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const lengthSq = dx * dx + dy * dy;
+          const t =
+            lengthSq === 0
+              ? 0
+              : Math.max(
+                  0,
+                  Math.min(
+                    1,
+                    ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq,
+                  ),
+                );
+          const distance = Math.hypot(
+            a.x + t * dx - point.x,
+            a.y + t * dy - point.y,
+          );
+          if (distance <= RESIZE_BAND && (!best || distance < best.distance))
+            best = {
+              handle: hand[i],
+              cursor: Math.abs(dy) > Math.abs(dx) ? "ew-resize" : "ns-resize",
+              distance,
+            };
+        }
+        return best ? { handle: best.handle, cursor: best.cursor } : null;
+      };
+      const endResize = () => {
+        if (!resize) return;
+        if (resize.moved) {
+          remember(resize.before);
+          setScene(sceneRef.current);
+          justDragged = true;
+        }
+        resize = null;
+        map!.dragPan.enable();
+        map!.getCanvas().style.cursor = "";
+      };
+      const endGesture = () => {
+        endDrag();
+        endResize();
+      };
+
       map.on("mousedown", (e) => {
         // An intentional new press clears suppression; a drag-generated click does not.
         justDragged = false;
@@ -1065,6 +1152,20 @@ export function IntersectionEditor({
           return;
         }
         if (e.originalEvent.button !== 0 || measuringRef.current) return;
+        // The selected component's own perimeter resizes it.
+        const hit = perimeterHit(e.point);
+        if (hit) {
+          e.preventDefault();
+          map!.dragPan.disable();
+          resize = {
+            id: selectedRef.current!,
+            handle: hit.handle,
+            before: sceneRef.current,
+            moved: false,
+            blocked: false,
+          };
+          return;
+        }
         const pick = pickAt(e.point);
         const sourceSelection = sourceSelectionRef.current;
         const component =
@@ -1108,10 +1209,39 @@ export function IntersectionEditor({
       });
 
       map.on("mousemove", (e) => {
+        if (resize) {
+          const current = sceneRef.current.find((c) => c.id === resize!.id);
+          if (!current) {
+            endResize();
+            return;
+          }
+          const local = toLocal(e.lngLat.lng, e.lngLat.lat);
+          const target =
+            snapPoint(
+              local,
+              snapTargets(sceneRef.current, resize.id),
+              SNAP_TOLERANCE,
+            ) ?? local;
+          const next = resized(current, resize.handle, target);
+          const problem = preview(next);
+          if (!problem) {
+            resize.moved = true;
+            setNotice(`Length ${next.length} m · width ${next.width} m`);
+          } else if (!resize.blocked) {
+            resize.blocked = true;
+            setNotice(problem);
+          }
+          return;
+        }
         if (!drag) {
           if (activeToolRef.current) {
             updateGhost(toLocal(e.lngLat.lng, e.lngLat.lat));
             map!.getCanvas().style.cursor = "crosshair";
+            return;
+          }
+          const perimeter = perimeterHit(e.point);
+          if (perimeter) {
+            map!.getCanvas().style.cursor = perimeter.cursor;
             return;
           }
           const pick = pickAt(e.point);
@@ -1163,10 +1293,10 @@ export function IntersectionEditor({
         }
       });
 
-      map.on("mouseup", endDrag);
-      window.addEventListener("mouseup", endDrag);
+      map.on("mouseup", endGesture);
+      window.addEventListener("mouseup", endGesture);
       removeWindowListener = () =>
-        window.removeEventListener("mouseup", endDrag);
+        window.removeEventListener("mouseup", endGesture);
       map.on("contextmenu", (e) => {
         // Right-drag rotates the camera; only a stationary right-click opens the menu.
         if (

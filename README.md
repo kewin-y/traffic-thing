@@ -81,8 +81,9 @@ cd ../worker && uv sync --locked
 - **Saved projects**: scenes, editable areas, measurements, and the camera autosave
   to your account in Convex. Open recent projects from the dashboard. Existing
   browser-local maps can be imported; their original local saves are retained.
-- **Select, move and resize**: click to select, drag to move, and drag the white handles
-  to change length or width. Right-click for exact dimensions, rotation and delete.
+- **Select, move and resize**: click to select, drag to move, and drag any edge
+  (or the white handles) to change length or width. Right-click for exact
+  dimensions, rotation and delete.
   Ctrl+Z undoes.
 - **Measure**: measures the edge-to-edge distance between two components. The line
   follows them as they move.
