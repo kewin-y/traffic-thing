@@ -108,7 +108,9 @@ const MIN_SNIP = 12;
 /** Farthest a selection corner may land from the camera's centre, in metres. */
 const MAX_SNIP_REACH = 4000;
 /** Farthest a placed or dragged component will bend to meet its neighbours. */
-const SNAP_TOLERANCE = 3;
+const SNAP_TOLERANCE = 5;
+/** Placement-rotation step for the R / Shift+R keys. */
+const ROTATE_STEP = 15;
 
 // Downtown Toronto: Bathurst St to the Don Valley, the waterfront to Bloor St.
 const DOWNTOWN_BOUNDS: [[number, number], [number, number]] = [
@@ -539,6 +541,10 @@ export function IntersectionEditor({
   const sourceSelectionRef = useRef<SceneComponent | null>(null);
   const activeToolRef = useRef<ComponentKind | null>(null);
   const ghostRef = useRef<SceneComponent | null>(null);
+  /** Rotation applied to the armed tool's ghost and placements, in degrees. */
+  const ghostRotationRef = useRef(0);
+  /** Where the armed tool's ghost last stood, for the rotate keys. */
+  const ghostPositionRef = useRef<Vec2 | null>(null);
   const measuringRef = useRef(false);
   const measureStartRef = useRef<string | null>(null);
 
@@ -750,6 +756,29 @@ export function IntersectionEditor({
     setNotice(next ? "Measure: click one component, then another." : null);
   }, [select]);
 
+  /** A component of `kind` at a local position, rotated and snapped. */
+  const placeCandidate = useCallback(
+    (kind: ComponentKind, [x, y]: Vec2) =>
+      snapComponent(
+        { ...componentFromDrop(kind, x, y), rotation: ghostRotationRef.current },
+        snapTargets(sceneRef.current),
+        SNAP_TOLERANCE,
+      ),
+    [],
+  );
+
+  /** Move the armed tool's ghost to a local position. */
+  const updateGhost = useCallback(
+    ([x, y]: Vec2) => {
+      const kind = activeToolRef.current;
+      if (!kind) return;
+      ghostPositionRef.current = [x, y];
+      ghostRef.current = placeCandidate(kind, [x, y]);
+      drawGhost();
+    },
+    [drawGhost, placeCandidate],
+  );
+
   /** Arm a toolbox tool for click-to-place, or disarm with null. */
   const armTool = useCallback(
     (kind: ComponentKind | null) => {
@@ -758,6 +787,8 @@ export function IntersectionEditor({
       setMenu(null);
       setIssuePopup(null);
       ghostRef.current = null;
+      ghostPositionRef.current = null;
+      ghostRotationRef.current = 0;
       drawGhost();
       if (!kind) return;
       select(null);
@@ -775,11 +806,7 @@ export function IntersectionEditor({
   const placeComponent = useCallback(
     (kind: ComponentKind, lngLat: { lng: number; lat: number }) => {
       const [x, y] = toLocal(lngLat.lng, lngLat.lat);
-      const created = snapComponent(
-        componentFromDrop(kind, x, y),
-        snapTargets(sceneRef.current),
-        SNAP_TOLERANCE,
-      );
+      const created = placeCandidate(kind, [x, y]);
       if (!isEditable(areasRef.current, [created.x, created.y])) {
         setNotice(READ_ONLY);
         return;
@@ -796,7 +823,7 @@ export function IntersectionEditor({
         `Added ${describe(created).toLowerCase()}. Click again to place another, or press Esc to finish.`,
       );
     },
-    [commit, select],
+    [commit, select, placeCandidate],
   );
 
   /** Turn a selected network edge into an editable road component. */
@@ -1083,13 +1110,7 @@ export function IntersectionEditor({
       map.on("mousemove", (e) => {
         if (!drag) {
           if (activeToolRef.current) {
-            const [x, y] = toLocal(e.lngLat.lng, e.lngLat.lat);
-            ghostRef.current = snapComponent(
-              componentFromDrop(activeToolRef.current, x, y),
-              snapTargets(sceneRef.current),
-              SNAP_TOLERANCE,
-            );
-            drawGhost();
+            updateGhost(toLocal(e.lngLat.lng, e.lngLat.lat));
             map!.getCanvas().style.cursor = "crosshair";
             return;
           }
@@ -1213,7 +1234,7 @@ export function IntersectionEditor({
       map?.remove();
       mapRef.current = null;
     };
-  }, [armTool, commit, draw, drawGhost, drawGrey, placeComponent, preview, remember, select]);
+  }, [armTool, commit, draw, drawGhost, drawGrey, placeComponent, preview, remember, select, updateGhost]);
 
   // Real-world traffic controls, as a reference layer under the scene.
   useEffect(() => {
@@ -1507,7 +1528,7 @@ export function IntersectionEditor({
     let before: SceneComponent[] | null = null;
     for (const handle of HANDLES) {
       const element = document.createElement("div");
-      element.className = `size-3.5 rounded-[3px] border-2 border-neutral-900 bg-white shadow ${
+      element.className = `size-[18px] rounded-[4px] border-2 border-neutral-900 bg-white shadow ${
         handle.startsWith("end") ? "cursor-ew-resize" : "cursor-ns-resize"
       }`;
       element.title = handle.startsWith("end")
@@ -1686,10 +1707,20 @@ export function IntersectionEditor({
           undo();
         }
       }
+      // While placing: R rotates the ghost clockwise, Shift+R back.
+      else if (key === "r" && activeToolRef.current) {
+        event.preventDefault();
+        ghostRotationRef.current =
+          (ghostRotationRef.current + (event.shiftKey ? -ROTATE_STEP : ROTATE_STEP) + 360) % 360;
+        if (ghostPositionRef.current) updateGhost(ghostPositionRef.current);
+        setNotice(
+          `${TOOL_BY_KIND[activeToolRef.current].label}: rotation ${ghostRotationRef.current}°.`,
+        );
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [armTool, menu, selected, remove, undo, redo, select, toggleMeasuring]);
+  }, [armTool, menu, selected, remove, undo, redo, select, toggleMeasuring, updateGhost]);
 
   /** Look straight down on everything editable, or on downtown if nothing is. */
   function birdsEye() {

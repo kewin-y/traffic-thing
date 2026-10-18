@@ -67,7 +67,8 @@ cd ../worker && uv sync --locked
 
 - **Add**: pick a tool from the left panel, then click the map to place it. Components
   snap to nearby corners and edges — road ends butt together and angles finish
-  to match, so joints come out seamless.
+  to match, so joints come out seamless. While placing, R / Shift+R rotate the
+  ghost in 15° steps.
 - **Inspect and edit imported roads**: teal roads come from the published SUMO
   network. Click a segment to highlight one direction of travel and inspect its lane
   count, speed limit, and length. "Make editable" turns that edge into an editable
