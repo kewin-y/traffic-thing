@@ -1,17 +1,23 @@
 import type { Feature, FeatureCollection, LineString, Point } from "geojson";
-import type { Map as MapLibreMap } from "maplibre-gl";
+import type {
+  FilterSpecification,
+  GeoJSONSource,
+  Map as MapLibreMap,
+} from "maplibre-gl";
 import type { ComponentKind, SceneComponent, TurnBanKind } from "./components";
-import { toLocal, type Vec2 } from "./geometry";
-import { newId } from "./scene";
+import { toLngLat, toLocal, type Vec2 } from "./geometry";
+import { findSceneComponent } from "./scene-edits";
 
 // Real-world signals, signs and posted limits from the imported OpenStreetMap
 // snapshot (scripts/extract-traffic-controls.py). Shown as a reference layer;
-// clicking one inside an editable area turns it into an editable component.
+// clicking one inspects it; edits are saved as one source-linked override.
 
 export const CONTROLS_URL = "/data/toronto-traffic-controls.geojson";
 export const CONTROLS_SOURCE = "traffic-controls";
 export const CONTROL_ICONS_LAYER = "traffic-control-icons";
 export const SPEED_LIMITS_LAYER = "traffic-speed-limits";
+export const SCENE_CONTROL_SOURCE = "editable-traffic-controls";
+export const SCENE_CONTROL_LAYER = "editable-traffic-control-icons";
 
 export type ControlKind =
   "traffic_light" | "stop_sign" | "yield_sign" | "speed_hump" | TurnBanKind;
@@ -115,6 +121,7 @@ const round = (v: number) => Math.round(v * 10) / 10;
 /**
  * The editable component for a real-world control. Signs and signals face
  * the traffic they govern: their local +y points back along its travel.
+ * Inspecting a source feature never relocates it or creates a new identity.
  */
 export function componentFromControl(
   props: ControlProperties,
@@ -126,24 +133,32 @@ export function componentFromControl(
   const [x, y] = toLocal(at.lng, at.lat);
   const heading = props.heading ?? along;
   let rotation = 0;
-  let position: Vec2 = [x, y];
   if (heading !== undefined) {
     const [tx, ty] = travel(at.lng, at.lat, heading);
     rotation = Math.round((Math.atan2(tx, -ty) * 180) / Math.PI);
-    // Signal nodes sit on the centreline; stand the pole at the right kerb.
-    if (kind === "traffic_light") position = [x + ty * 5, y - tx * 5];
   }
   return {
-    id: newId(kind),
+    id: `map-control-${props.ref}`,
     kind,
-    x: round(position[0]),
-    y: round(position[1]),
+    x: round(x),
+    y: round(y),
     rotation,
     ...(kind === "speed_hump" ? { length: 7, width: 3.7 } : {}),
     ...(props.speedKmh !== undefined ? { speedKmh: props.speedKmh } : {}),
     ...(props.hours ? { hours: props.hours } : {}),
-    osmId: props.kind === "speed_limit" ? undefined : props.ref,
+    osmId: props.ref,
   };
+}
+
+/** Resolve an existing edit before considering the original reference feature. */
+export function resolveControl(
+  scene: SceneComponent[],
+  props: ControlProperties,
+  at: { lng: number; lat: number },
+  along?: number,
+) {
+  const original = componentFromControl(props, at, along);
+  return findSceneComponent(scene, original) ?? original;
 }
 
 // --- Map icons ---------------------------------------------------------------
@@ -313,8 +328,7 @@ function speedPlate(speed: number) {
   return g.getImageData(0, 0, 48, 60);
 }
 
-/** Add the icons, the source and the two reference layers to the map. */
-export function addControlLayers(map: MapLibreMap, data: TrafficControls) {
+function addControlImages(map: MapLibreMap) {
   for (const kind of CONTROL_KINDS) {
     if (map.hasImage(`control-${kind}`)) continue;
     const g = canvas();
@@ -323,6 +337,75 @@ export function addControlLayers(map: MapLibreMap, data: TrafficControls) {
       pixelRatio: 2,
     });
   }
+}
+
+/** Editable controls keep a visible target after their reference icon is hidden. */
+export function sceneControlFeatures(
+  scene: SceneComponent[],
+): FeatureCollection<Point, { cid: string; kind: ControlKind }> {
+  return {
+    type: "FeatureCollection",
+    features: scene.flatMap((component) => {
+      if (!CONTROL_KINDS.includes(component.kind as ControlKind)) return [];
+      return [
+        {
+          type: "Feature" as const,
+          properties: {
+            cid: component.id,
+            kind: component.kind as ControlKind,
+          },
+          geometry: {
+            type: "Point" as const,
+            coordinates: toLngLat([component.x, component.y]),
+          },
+        },
+      ];
+    }),
+  };
+}
+
+export function addEditableControlLayer(map: MapLibreMap) {
+  addControlImages(map);
+  map.addSource(SCENE_CONTROL_SOURCE, {
+    type: "geojson",
+    data: sceneControlFeatures([]),
+  });
+  map.addLayer({
+    id: SCENE_CONTROL_LAYER,
+    type: "symbol",
+    source: SCENE_CONTROL_SOURCE,
+    layout: {
+      "icon-image": ["concat", "control-", ["get", "kind"]],
+      "icon-size": [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        14,
+        0.55,
+        17,
+        0.8,
+        19,
+        1,
+      ],
+      "icon-allow-overlap": true,
+      "icon-ignore-placement": true,
+      "icon-pitch-alignment": "viewport",
+    },
+  });
+}
+
+export function drawEditableControls(
+  map: MapLibreMap,
+  scene: SceneComponent[],
+) {
+  map
+    .getSource<GeoJSONSource>(SCENE_CONTROL_SOURCE)
+    ?.setData(sceneControlFeatures(scene));
+}
+
+/** Add the icons, the source and the two reference layers to the map. */
+export function addControlLayers(map: MapLibreMap, data: TrafficControls) {
+  addControlImages(map);
   const speeds = new Set(
     data.features.flatMap((f) =>
       f.properties.kind === "speed_limit" ? [f.properties.speedKmh!] : [],
@@ -391,12 +474,22 @@ export function addControlLayers(map: MapLibreMap, data: TrafficControls) {
 
 /** Hide the real-world controls that have been converted or deleted. */
 export function hideControls(map: MapLibreMap, refs: string[]) {
-  if (!map.getLayer(CONTROL_ICONS_LAYER)) return;
-  map.setFilter(CONTROL_ICONS_LAYER, [
-    "all",
-    ["!=", ["get", "kind"], "speed_limit"],
-    ["!", ["in", ["get", "ref"], ["literal", refs]]],
-  ]);
+  const visible: FilterSpecification = [
+    "!",
+    ["in", ["get", "ref"], ["literal", refs]],
+  ];
+  if (map.getLayer(CONTROL_ICONS_LAYER))
+    map.setFilter(CONTROL_ICONS_LAYER, [
+      "all",
+      ["!=", ["get", "kind"], "speed_limit"],
+      visible,
+    ]);
+  if (map.getLayer(SPEED_LIMITS_LAYER))
+    map.setFilter(SPEED_LIMITS_LAYER, [
+      "all",
+      ["==", ["get", "kind"], "speed_limit"],
+      [...visible],
+    ]);
 }
 
 /** Compass bearing of a line where it passes closest to `at`. */

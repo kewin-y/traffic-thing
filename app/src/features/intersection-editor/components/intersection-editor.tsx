@@ -38,6 +38,7 @@ import {
 import { renderScene, type SceneLayers } from "../lib/render";
 import { checkScene, SOURCES, type Issue } from "../lib/rules";
 import { componentFromDrop, describe } from "../lib/scene";
+import { updateSceneComponent, removeSceneComponent } from "../lib/scene-edits";
 import { useRoadNetwork } from "../hooks/use-road-network";
 import {
   NETWORK_LAYER,
@@ -56,8 +57,11 @@ import {
 } from "../lib/edit-areas";
 import {
   addControlLayers,
+  addEditableControlLayer,
+  drawEditableControls,
+  SCENE_CONTROL_LAYER,
   bearingNear,
-  componentFromControl,
+  resolveControl,
   CONTROL_ICONS_LAYER,
   describeControl,
   hideControls,
@@ -226,6 +230,7 @@ function addSceneLayers(map: MapLibreMap): BasemapLayers {
     },
     firstLabel,
   );
+  addEditableControlLayer(map);
   // Measurement lines sit above everything so they are always readable.
   map.addLayer({
     id: "measure",
@@ -349,6 +354,7 @@ interface Snapshot {
 
 interface MenuState {
   id: string;
+  sourceComponent?: SceneComponent;
   x: number;
   y: number;
   /** Map size when opened, so the menu can stay inside it. */
@@ -489,6 +495,7 @@ export function IntersectionEditor({
   const basemapRef = useRef<BasemapLayers>({ roads: [], buildingSource: null });
   const frameRef = useRef<number | null>(null);
   const selectedRef = useRef<string | null>(null);
+  const sourceSelectionRef = useRef<SceneComponent | null>(null);
   const measuringRef = useRef(false);
   const measureStartRef = useRef<string | null>(null);
 
@@ -558,6 +565,7 @@ export function IntersectionEditor({
   const select = useCallback((id: string | null) => {
     setRoadSelection(null);
     selectedRef.current = id;
+    sourceSelectionRef.current = null;
     setSelected(id);
   }, []);
 
@@ -618,6 +626,7 @@ export function IntersectionEditor({
       for (const key of Object.keys(layers) as (keyof SceneLayers)[]) {
         map.getSource<GeoJSONSource>(key)?.setData(layers[key]);
       }
+      drawEditableControls(map, sceneRef.current);
       drawMeasurements();
       if (growingRef.current.size)
         frameRef.current = requestAnimationFrame(frame);
@@ -633,12 +642,23 @@ export function IntersectionEditor({
     (component: SceneComponent): string | null => {
       if (!isEditable(areasRef.current, [component.x, component.y]))
         return READ_ONLY;
-      const next = sceneRef.current.map((c) =>
-        c.id === component.id ? component : c,
+      const isNewOverride = !sceneRef.current.some(
+        (c) => c.id === component.id,
       );
+      const next = updateSceneComponent(sceneRef.current, component, component);
       if (breaksSidewalkRule(next, new Set([component.id])))
         return SIDEWALK_RULE;
       sceneRef.current = next;
+      if (isNewOverride && mapRef.current)
+        hideControls(
+          mapRef.current,
+          next.flatMap((c) =>
+            typeof c.osmId === "string" &&
+            /^(node|way|relation)\//.test(c.osmId)
+              ? [c.osmId]
+              : [],
+          ),
+        );
       markersRef.current
         .get(component.id)
         ?.setLngLat(toLngLat([component.x, component.y]));
@@ -751,7 +771,7 @@ export function IntersectionEditor({
       map.on("render", drawGrey);
       const hitAt = (point: { x: number; y: number }) =>
         map!.queryRenderedFeatures([point.x, point.y], {
-          layers: [...LAYER_IDS],
+          layers: [SCENE_CONTROL_LAYER, ...LAYER_IDS],
         })[0]?.properties?.cid as string | undefined;
 
       /** Whether the component with this id sits in an editable area. */
@@ -803,8 +823,26 @@ export function IntersectionEditor({
           return;
         }
         if (e.originalEvent.button !== 0 || measuringRef.current) return;
-        const id = hitAt(e.point);
-        const component = sceneRef.current.find((c) => c.id === id);
+        let id = hitAt(e.point);
+        let component = sceneRef.current.find((c) => c.id === id);
+        const sourceSelection = sourceSelectionRef.current;
+        if (!component && sourceSelection) {
+          const layers = [CONTROL_ICONS_LAYER, SPEED_LIMITS_LAYER].filter(
+            (layer) => map!.getLayer(layer),
+          );
+          const hit = layers.length
+            ? map!
+                .queryRenderedFeatures(e.point, { layers })
+                .find(
+                  (feature) =>
+                    feature.properties?.ref === sourceSelection.osmId,
+                )
+            : undefined;
+          if (hit) {
+            id = sourceSelection.id;
+            component = sourceSelection;
+          }
+        }
         // Only an already-selected component drags; elsewhere the map pans.
         if (!component || id !== selectedRef.current) return;
         e.preventDefault();
@@ -840,8 +878,18 @@ export function IntersectionEditor({
         const [x, y] = toLocal(e.lngLat.lng, e.lngLat.lat);
         const round = (v: number) => Math.round(v * 10) / 10;
         const id = drag.id;
-        const component = sceneRef.current.find((c) => c.id === id);
+        const component =
+          sceneRef.current.find((c) => c.id === id) ??
+          (sourceSelectionRef.current?.id === id
+            ? sourceSelectionRef.current
+            : undefined);
         if (!component) return;
+        const grabbedAt = map!.project(toLngLat(drag.grab));
+        if (
+          !drag.moved &&
+          Math.hypot(e.point.x - grabbedAt.x, e.point.y - grabbedAt.y) < 3
+        )
+          return;
         const moved = {
           ...component,
           x: round(drag.origin[0] + x - drag.grab[0]),
@@ -871,6 +919,7 @@ export function IntersectionEditor({
         const id = hitAt(e.point);
         const editable = editableId(id);
         if (id && !editable) setNotice(READ_ONLY);
+        if (id && editable) select(id);
         setMenu(
           id && editable ? menuAt(e.target, id, e.point.x, e.point.y) : null,
         );
@@ -935,7 +984,8 @@ export function IntersectionEditor({
               control.geometry.type === "LineString"
                 ? bearingNear(control.geometry.coordinates, e.lngLat)
                 : undefined;
-            const created = componentFromControl(props, at, along);
+            const created = resolveControl(sceneRef.current, props, at, along);
+            if (created.kind === "removed_osm") return;
             if (!isEditable(areasRef.current, [created.x, created.y])) {
               select(null);
               setNotice(
@@ -943,11 +993,13 @@ export function IntersectionEditor({
               );
               return;
             }
-            commit([...sceneRef.current, created]);
             select(created.id);
-            setNotice(
-              `${describeControl(props)} is now editable. Drag it, or right-click for options.`,
-            );
+            sourceSelectionRef.current = created;
+            setMenu({
+              ...menuAt(map!, created.id, e.point.x, e.point.y),
+              sourceComponent: created,
+            });
+            setNotice(`Editing ${describeControl(props).toLowerCase()}.`);
             return;
           }
         }
@@ -985,10 +1037,9 @@ export function IntersectionEditor({
           if (converted) {
             commit([...sceneRef.current, converted]);
             id = converted.id;
-            setNotice(
-              `This ${converted.kind} from the map is now editable. Drag, resize or right-click it.`,
-            );
+            setNotice(`This ${converted.kind} from the map is now editable.`);
             select(id);
+            setMenu(menuAt(map!, id, e.point.x, e.point.y));
             return;
           }
         }
@@ -998,10 +1049,10 @@ export function IntersectionEditor({
           return;
         }
         select(id);
-        if (id)
-          setNotice(
-            "Selected. Drag it to move, or drag the white handles to resize.",
-          );
+        if (id) {
+          setMenu(menuAt(map!, id, e.point.x, e.point.y));
+          setNotice("Edit its properties, or drag it to move.");
+        }
       });
       map.on("dragstart", () => setMenu(null));
       map.on("zoomstart", () => setMenu(null));
@@ -1043,7 +1094,7 @@ export function IntersectionEditor({
     hideControls(
       map,
       scene.flatMap((c) =>
-        typeof c.osmId === "string" && /^(node|relation)\//.test(c.osmId)
+        typeof c.osmId === "string" && /^(node|way|relation)\//.test(c.osmId)
           ? [c.osmId]
           : [],
       ),
@@ -1233,8 +1284,8 @@ export function IntersectionEditor({
       if (!marker) {
         const element = document.createElement("div");
         element.className =
-          "cursor-context-menu rounded-[3px] border border-neutral-900 bg-white px-1 py-px text-center font-sans text-[8px] leading-tight font-bold text-neutral-900 shadow-sm select-none";
-        element.addEventListener("contextmenu", (event) => {
+          "cursor-pointer rounded-[3px] border border-neutral-900 bg-white px-1 py-px text-center font-sans text-[8px] leading-tight font-bold text-neutral-900 shadow-sm select-none";
+        const openProperties = (event: MouseEvent) => {
           event.preventDefault();
           event.stopPropagation();
           const current = sceneRef.current.find((c) => c.id === sign.id);
@@ -1246,8 +1297,11 @@ export function IntersectionEditor({
             return;
           }
           const point = map.project(marker!.getLngLat());
+          select(sign.id);
           setMenu(menuAt(map, sign.id, point.x, point.y));
-        });
+        };
+        element.addEventListener("click", openProperties);
+        element.addEventListener("contextmenu", openProperties);
         marker = new lib.Marker({ element, anchor: "bottom", offset: [0, -22] })
           .setLngLat(toLngLat([sign.x, sign.y]))
           .addTo(map);
@@ -1263,7 +1317,7 @@ export function IntersectionEditor({
       );
       marker.setLngLat(toLngLat([sign.x, sign.y]));
     }
-  }, [scene, mapReady]);
+  }, [scene, mapReady, select]);
 
   // Resize handles on the selected component's ends and sides.
   const selectedComponent = useMemo(
@@ -1390,16 +1444,17 @@ export function IntersectionEditor({
   }, [notice]);
 
   const menuComponent = useMemo(
-    () => (menu ? scene.find((c) => c.id === menu.id) : undefined),
+    () =>
+      menu
+        ? (scene.find((c) => c.id === menu.id) ?? menu.sourceComponent)
+        : undefined,
     [menu, scene],
   );
 
   const update = useCallback(
-    (id: string, patch: Partial<SceneComponent>) => {
-      const next = sceneRef.current.map((c) =>
-        c.id === id ? { ...c, ...patch } : c,
-      );
-      if (breaksSidewalkRule(next, new Set([id]))) {
+    (component: SceneComponent, patch: Partial<SceneComponent>) => {
+      const next = updateSceneComponent(sceneRef.current, component, patch);
+      if (breaksSidewalkRule(next, new Set([component.id]))) {
         setNotice(SIDEWALK_RULE);
         return;
       }
@@ -1409,28 +1464,15 @@ export function IntersectionEditor({
   );
 
   const remove = useCallback(
-    (id: string) => {
-      // A deleted map feature leaves a placeholder so the basemap keeps it hidden.
-      commit(
-        sceneRef.current.flatMap((c) =>
-          c.id !== id
-            ? [c]
-            : c.osmId === undefined
-              ? []
-              : [
-                  {
-                    id: c.id,
-                    kind: "removed_osm" as const,
-                    x: c.x,
-                    y: c.y,
-                    rotation: 0,
-                    osmId: c.osmId,
-                    footprint: c.footprint,
-                    osmAt: c.osmAt ?? (c.footprint ? [c.x, c.y] : undefined),
-                  },
-                ],
-        ),
-      );
+    (id: string, sourceComponent?: SceneComponent) => {
+      const component =
+        sceneRef.current.find((c) => c.id === id) ??
+        sourceComponent ??
+        (sourceSelectionRef.current?.id === id
+          ? sourceSelectionRef.current
+          : undefined);
+      if (!component) return;
+      commit(removeSceneComponent(sceneRef.current, component));
       setMenu(null);
       setIssuePopup(null);
       if (selectedRef.current === id) select(null);
@@ -1467,7 +1509,7 @@ export function IntersectionEditor({
       }
       const target = menu?.id ?? selected;
       if ((event.key === "Delete" || event.key === "Backspace") && target)
-        remove(target);
+        remove(target, menu?.sourceComponent);
       const key = event.key.toLowerCase();
       if (event.ctrlKey || event.metaKey) {
         if (key === "y" || (key === "z" && event.shiftKey)) {
@@ -2118,8 +2160,9 @@ export function IntersectionEditor({
           x={menu.x}
           y={menu.y}
           bounds={menu.bounds}
-          onUpdate={(patch) => update(menuComponent.id, patch)}
-          onDelete={() => remove(menuComponent.id)}
+          onClose={() => setMenu(null)}
+          onUpdate={(patch) => update(menuComponent, patch)}
+          onDelete={() => remove(menuComponent.id, menuComponent)}
         />
       )}
 
