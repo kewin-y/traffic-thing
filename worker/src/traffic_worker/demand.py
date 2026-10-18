@@ -30,10 +30,16 @@ def write_edgedata(
     closed = set(closed)
     root = ET.Element("meandata")
     interval = ET.SubElement(root, "interval", begin="0", end=str(duration_seconds))
+    written: set[str] = set()
     for edge_id, veh_per_hour in volumes:
         count = 0 if edge_id in closed else round(veh_per_hour * scale)
         if count >= 1 or edge_id in closed:
             ET.SubElement(interval, "edge", id=edge_id, entered=str(count))
+            written.add(edge_id)
+    # Closed edges missing from volumes must still be written with 0, otherwise
+    # routeSampler treats them as unconstrained and routes through them.
+    for edge_id in sorted(closed - written):
+        ET.SubElement(interval, "edge", id=edge_id, entered="0")
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
 

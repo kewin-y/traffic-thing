@@ -274,11 +274,13 @@ def _simulate(
 def run_simulation(
     request: SimulationRequest, timeline_path: Path | None = None
 ) -> dict[str, Any]:
-    """Run trusted mounted demand without rewriting, repairing, or rerouting it.
+    """Run mounted demand, or model-sampled demand when the API provided targets.
 
-    Native SUMO behavior explicitly encoded in demand (such as trips needing an
-    initial route or equipped rerouting devices) is preserved. Invalid fixed
-    routes fail; no routing tool or ignore-errors option repairs them.
+    Without PREDICTED_EDGEDATA_PATH the mounted demand is used as-is: trusted,
+    not rewritten, repaired, or rerouted; invalid fixed routes fail; no routing
+    tool or ignore-errors option repairs them. With PREDICTED_EDGEDATA_PATH the
+    mounted demand is only a candidate route pool: routeSampler re-samples it to
+    match the API's predicted per-edge counts.
     """
     with _stdout_to_stderr():
         source, demand = network_assets(
