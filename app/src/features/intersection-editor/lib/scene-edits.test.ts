@@ -95,3 +95,36 @@ test("editing or deleting a source collapses duplicates left by the old click be
     expect.objectContaining({ kind: "removed_osm", osmId: props.ref }),
   ]);
 });
+
+test("separate buildings merged into the same tile feature remain independently editable", () => {
+  const footprint: [number, number][] = [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ];
+  const first: SceneComponent = {
+    id: "building-a",
+    kind: "building",
+    x: 0,
+    y: 0,
+    rotation: 0,
+    osmId: 42,
+    osmAt: [0, 0],
+    footprint,
+  };
+  const second: SceneComponent = {
+    ...first,
+    id: "building-b",
+    x: 20,
+    osmAt: [20, 0],
+  };
+  const edited = updateSceneComponent([first, second], second, { height: 30 });
+  expect(edited).toHaveLength(2);
+  expect(edited[0]).toBe(first);
+  expect(edited[1].height).toBe(30);
+  const removed = removeSceneComponent(edited, second);
+  expect(removed).toHaveLength(2);
+  expect(removed[0]).toBe(first);
+  expect(removed[1].kind).toBe("removed_osm");
+});

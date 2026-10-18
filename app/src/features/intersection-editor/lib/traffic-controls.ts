@@ -7,6 +7,7 @@ import type {
 import type { ComponentKind, SceneComponent, TurnBanKind } from "./components";
 import { toLngLat, toLocal, type Vec2 } from "./geometry";
 import { findSceneComponent } from "./scene-edits";
+import { trimIconPadding } from "./icon-image";
 
 // Real-world signals, signs and posted limits from the imported OpenStreetMap
 // snapshot (scripts/extract-traffic-controls.py). Shown as a reference layer;
@@ -333,9 +334,13 @@ function addControlImages(map: MapLibreMap) {
     if (map.hasImage(`control-${kind}`)) continue;
     const g = canvas();
     ICONS[kind](g);
-    map.addImage(`control-${kind}`, g.getImageData(0, 0, ICON_PX, ICON_PX), {
-      pixelRatio: 2,
-    });
+    map.addImage(
+      `control-${kind}`,
+      trimIconPadding(g.getImageData(0, 0, ICON_PX, ICON_PX)),
+      {
+        pixelRatio: 2,
+      },
+    );
   }
 }
 

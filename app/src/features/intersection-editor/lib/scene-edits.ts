@@ -1,15 +1,22 @@
 import type { SceneComponent } from "./components";
 
-/** A map source feature keeps one editable override, even across stale hits. */
+/** Tile features can merge several buildings under one source ID. */
+function sameComponent(a: SceneComponent, b: SceneComponent) {
+  if (a.id === b.id) return true;
+  if (a.osmId === undefined || a.osmId !== b.osmId) return false;
+  if (!a.footprint && !b.footprint) return true;
+  if (!a.footprint || !b.footprint) return false;
+  const originA = a.osmAt ?? [a.x, a.y];
+  const originB = b.osmAt ?? [b.x, b.y];
+  return originA.every((value, i) => Math.abs(value - originB[i]) < 0.15);
+}
+
+/** A source object keeps one editable override, even across stale hits. */
 export function findSceneComponent(
   scene: SceneComponent[],
   component: SceneComponent,
 ) {
-  return scene.find(
-    (item) =>
-      item.id === component.id ||
-      (component.osmId !== undefined && item.osmId === component.osmId),
-  );
+  return scene.find((item) => sameComponent(item, component));
 }
 
 export function updateSceneComponent(
@@ -24,8 +31,7 @@ export function updateSceneComponent(
     ? scene.flatMap((item) =>
         item === existing
           ? [updated]
-          : item.id === component.id ||
-              (component.osmId !== undefined && item.osmId === component.osmId)
+          : sameComponent(item, component)
             ? []
             : [item],
       )
@@ -38,11 +44,7 @@ export function removeSceneComponent(
 ) {
   const existing = findSceneComponent(scene, component);
   const current = existing ?? component;
-  const remaining = scene.filter(
-    (item) =>
-      item.id !== current.id &&
-      (current.osmId === undefined || item.osmId !== current.osmId),
-  );
+  const remaining = scene.filter((item) => !sameComponent(item, current));
   if (current.osmId === undefined) return remaining;
   return [
     ...remaining,

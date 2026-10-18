@@ -31,14 +31,18 @@ import { BUILDING_COLOUR, themeBasemap } from "../lib/basemap-theme";
 import {
   componentFromBasemap,
   remainingBuildings,
-  type BasemapFeature,
   type HiddenBuilding,
   type PointerRay,
 } from "../lib/osm";
 import { renderScene, type SceneLayers } from "../lib/render";
+import { PICK_LAYERS, resolveMapPick, type MapPick } from "../lib/picking";
 import { checkScene, SOURCES, type Issue } from "../lib/rules";
 import { componentFromDrop, describe } from "../lib/scene";
-import { updateSceneComponent, removeSceneComponent } from "../lib/scene-edits";
+import {
+  findSceneComponent,
+  updateSceneComponent,
+  removeSceneComponent,
+} from "../lib/scene-edits";
 import { useRoadNetwork } from "../hooks/use-road-network";
 import {
   NETWORK_LAYER,
@@ -59,14 +63,10 @@ import {
   addControlLayers,
   addEditableControlLayer,
   drawEditableControls,
-  SCENE_CONTROL_LAYER,
   bearingNear,
   resolveControl,
-  CONTROL_ICONS_LAYER,
-  describeControl,
   hideControls,
   loadControls,
-  SPEED_LIMITS_LAYER,
   type ControlProperties,
 } from "../lib/traffic-controls";
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
@@ -330,19 +330,22 @@ function pointerRay(
   const fov = (map.getVerticalFieldOfView() * Math.PI) / 180;
   const pitch = (map.getPitch() * Math.PI) / 180;
   const bearing = (map.getBearing() * Math.PI) / 180;
-  const cosLat = Math.cos((center.lat * Math.PI) / 180);
-  // Camera distance to the map centre, in screen pixels and then metres.
+  const lat = (center.lat * Math.PI) / 180;
   const pixels = (0.5 / Math.tan(fov / 2)) * map.getContainer().clientHeight;
-  const metres =
-    pixels * ((40_075_016.686 * cosLat) / (512 * 2 ** map.getZoom()));
-  const back = metres * Math.sin(pitch);
+  const worldSize = 512 * 2 ** map.getZoom();
+  const back = (pixels * Math.sin(pitch)) / worldSize;
+  const centerY = (1 - Math.log(Math.tan(Math.PI / 4 + lat / 2)) / Math.PI) / 2;
+  const cameraY = centerY + back * Math.cos(bearing);
   return {
     ground: toLocal(ground.lng, ground.lat),
     camera: toLocal(
-      center.lng - (back * Math.sin(bearing)) / (111_320 * cosLat),
-      center.lat - (back * Math.cos(bearing)) / 111_320,
+      center.lng - back * Math.sin(bearing) * 360,
+      (Math.atan(Math.sinh(Math.PI * (1 - 2 * cameraY))) * 180) / Math.PI,
     ),
-    altitude: Math.max(1, metres * Math.cos(pitch)),
+    altitude: Math.max(
+      1,
+      (pixels * Math.cos(pitch) * 40_075_016.686 * Math.cos(lat)) / worldSize,
+    ),
   };
 }
 
@@ -769,37 +772,79 @@ export function IntersectionEditor({
         setMapReady(true);
       });
       map.on("render", drawGrey);
-      const hitAt = (point: { x: number; y: number }) =>
-        map!.queryRenderedFeatures([point.x, point.y], {
-          layers: [SCENE_CONTROL_LAYER, ...LAYER_IDS],
-        })[0]?.properties?.cid as string | undefined;
-
-      /** Whether the component with this id sits in an editable area. */
-      const editableId = (id: string | undefined) => {
-        const found = sceneRef.current.find((c) => c.id === id);
-        return !!found && isEditable(areasRef.current, [found.x, found.y]);
+      const pickAt = (point: { x: number; y: number }) => {
+        const layers = PICK_LAYERS.filter((layer) => map!.getLayer(layer));
+        if (!layers.length) return null;
+        return resolveMapPick(
+          map!.queryRenderedFeatures([point.x, point.y], { layers }),
+          sceneRef.current,
+          pointerRay(map!, map!.unproject([point.x, point.y])),
+        );
       };
 
-      /** Basemap buildings remain visual components; roads use the SUMO layer. */
-      const basemapAt = (point: {
-        x: number;
-        y: number;
-      }): BasemapFeature | null => {
-        const layers = ["osm-buildings", "osm-remainder"].filter((id) =>
-          map!.getLayer(id),
-        );
-        if (!layers.length) return null;
-        const [hit] = map!.queryRenderedFeatures([point.x, point.y], {
-          layers,
+      const inspect = (
+        pick: MapPick | null,
+        point: { x: number; y: number },
+      ) => {
+        setMenu(null);
+        setIssuePopup(null);
+        if (!pick) {
+          select(null);
+          return;
+        }
+        if (pick.kind === "road") {
+          select(null);
+          if (networkRef.current)
+            setRoadSelection({
+              networkId: networkRef.current.id,
+              edgeId: pick.edgeId,
+            });
+          return;
+        }
+        let component: SceneComponent | undefined;
+        if (pick.kind === "component")
+          component = sceneRef.current.find((c) => c.id === pick.id);
+        else if (pick.kind === "control") {
+          const control = pick.feature;
+          const props = control.properties as unknown as ControlProperties;
+          const ground = map!.unproject([point.x, point.y]);
+          const at =
+            control.geometry.type === "Point"
+              ? {
+                  lng: control.geometry.coordinates[0],
+                  lat: control.geometry.coordinates[1],
+                }
+              : ground;
+          const along =
+            control.geometry.type === "LineString"
+              ? bearingNear(control.geometry.coordinates, ground)
+              : undefined;
+          component = resolveControl(sceneRef.current, props, at, along);
+        } else if (pick.kind === "building") {
+          const original = componentFromBasemap(
+            pick.feature,
+            pointerRay(map!, map!.unproject([point.x, point.y])),
+          );
+          if (original)
+            component =
+              findSceneComponent(sceneRef.current, original) ?? original;
+        }
+        if (!component || component.kind === "removed_osm") {
+          select(null);
+          return;
+        }
+        if (!isEditable(areasRef.current, [component.x, component.y])) {
+          select(null);
+          setNotice(READ_ONLY);
+          return;
+        }
+        select(component.id);
+        sourceSelectionRef.current = component;
+        setMenu({
+          ...menuAt(map!, component.id, point.x, point.y),
+          sourceComponent: component,
         });
-        if (!hit) return null;
-        const properties = hit.properties ?? {};
-        return {
-          id: hit.layer.id === "osm-remainder" ? properties.osmId : hit.id,
-          geometry: hit.geometry,
-          properties,
-          layer: hit.layer.type === "fill-extrusion" ? "building" : "road",
-        };
+        setNotice("Edit its properties, or drag it to move.");
       };
 
       const endDrag = () => {
@@ -810,7 +855,6 @@ export function IntersectionEditor({
           // Swallow the click that follows this mouseup, but no later one
           // (there is none when the drag ends outside the map).
           justDragged = true;
-          setTimeout(() => (justDragged = false), 0);
         }
         drag = null;
         map!.dragPan.enable();
@@ -818,31 +862,39 @@ export function IntersectionEditor({
       };
 
       map.on("mousedown", (e) => {
+        // An intentional new press clears suppression; a drag-generated click does not.
+        justDragged = false;
         if (e.originalEvent.button === 2) {
           rightDown = { x: e.point.x, y: e.point.y };
           return;
         }
         if (e.originalEvent.button !== 0 || measuringRef.current) return;
-        let id = hitAt(e.point);
-        let component = sceneRef.current.find((c) => c.id === id);
+        const pick = pickAt(e.point);
         const sourceSelection = sourceSelectionRef.current;
-        if (!component && sourceSelection) {
-          const layers = [CONTROL_ICONS_LAYER, SPEED_LIMITS_LAYER].filter(
-            (layer) => map!.getLayer(layer),
-          );
-          const hit = layers.length
-            ? map!
-                .queryRenderedFeatures(e.point, { layers })
-                .find(
-                  (feature) =>
-                    feature.properties?.ref === sourceSelection.osmId,
-                )
-            : undefined;
-          if (hit) {
-            id = sourceSelection.id;
-            component = sourceSelection;
-          }
-        }
+        const component =
+          pick?.kind === "component"
+            ? sceneRef.current.find((c) => c.id === pick.id)
+            : sourceSelection &&
+                ((pick?.kind === "control" &&
+                  pick.feature.properties?.ref === sourceSelection.osmId) ||
+                  (pick?.kind === "building" &&
+                    sourceSelection.kind === "building" &&
+                    componentFromBasemap(
+                      pick.feature,
+                      pointerRay(map!, e.lngLat),
+                    )?.osmAt?.every(
+                      (v, i) =>
+                        Math.abs(
+                          v -
+                            (sourceSelection.osmAt ?? [
+                              sourceSelection.x,
+                              sourceSelection.y,
+                            ])[i],
+                        ) < 0.15,
+                    )))
+              ? sourceSelection
+              : undefined;
+        const id = component?.id;
         // Only an already-selected component drags; elsewhere the map pans.
         if (!component || id !== selectedRef.current) return;
         e.preventDefault();
@@ -860,19 +912,22 @@ export function IntersectionEditor({
 
       map.on("mousemove", (e) => {
         if (!drag) {
-          const id = hitAt(e.point);
+          const pick = pickAt(e.point);
+          const id =
+            pick?.kind === "component"
+              ? pick.id
+              : pick?.kind === "control" &&
+                  pick.feature.properties?.ref ===
+                    sourceSelectionRef.current?.osmId
+                ? sourceSelectionRef.current?.id
+                : null;
           map!.getCanvas().style.cursor = measuringRef.current
             ? "crosshair"
             : id && id === selectedRef.current
               ? "move"
-              : id
+              : pick
                 ? "pointer"
-                : map!.getLayer(NETWORK_LAYER) &&
-                    map!.queryRenderedFeatures(e.point, {
-                      layers: [NETWORK_LAYER],
-                    }).length
-                  ? "pointer"
-                  : "";
+                : "";
           return;
         }
         const [x, y] = toLocal(e.lngLat.lng, e.lngLat.lat);
@@ -916,13 +971,7 @@ export function IntersectionEditor({
         ) {
           return;
         }
-        const id = hitAt(e.point);
-        const editable = editableId(id);
-        if (id && !editable) setNotice(READ_ONLY);
-        if (id && editable) select(id);
-        setMenu(
-          id && editable ? menuAt(e.target, id, e.point.x, e.point.y) : null,
-        );
+        inspect(pickAt(e.point), e.point);
       });
       map.on("click", (e) => {
         setMenu(null);
@@ -931,7 +980,8 @@ export function IntersectionEditor({
           justDragged = false;
           return;
         }
-        let id = hitAt(e.point) ?? null;
+        const pick = pickAt(e.point);
+        const id = pick?.kind === "component" ? pick.id : null;
 
         if (measuringRef.current) {
           if (!id) {
@@ -961,98 +1011,7 @@ export function IntersectionEditor({
           return;
         }
 
-        // Real-world signals and signs: inside an editable area, make one
-        // editable; elsewhere, say what it is.
-        if (!id) {
-          const controlLayers = [
-            CONTROL_ICONS_LAYER,
-            SPEED_LIMITS_LAYER,
-          ].filter((layer) => map!.getLayer(layer));
-          const control = controlLayers.length
-            ? map!.queryRenderedFeatures(e.point, { layers: controlLayers })[0]
-            : undefined;
-          if (control) {
-            const props = control.properties as ControlProperties;
-            const at =
-              control.geometry.type === "Point"
-                ? {
-                    lng: control.geometry.coordinates[0],
-                    lat: control.geometry.coordinates[1],
-                  }
-                : e.lngLat;
-            const along =
-              control.geometry.type === "LineString"
-                ? bearingNear(control.geometry.coordinates, e.lngLat)
-                : undefined;
-            const created = resolveControl(sceneRef.current, props, at, along);
-            if (created.kind === "removed_osm") return;
-            if (!isEditable(areasRef.current, [created.x, created.y])) {
-              select(null);
-              setNotice(
-                `${describeControl(props)}, from OpenStreetMap. Select this area to edit it.`,
-              );
-              return;
-            }
-            select(created.id);
-            sourceSelectionRef.current = created;
-            setMenu({
-              ...menuAt(map!, created.id, e.point.x, e.point.y),
-              sourceComponent: created,
-            });
-            setNotice(`Editing ${describeControl(props).toLowerCase()}.`);
-            return;
-          }
-        }
-
-        // Imported roads retain their SUMO identity instead of becoming scenery.
-        if (!id) {
-          const layers = [
-            "osm-buildings",
-            "osm-remainder",
-            NETWORK_LAYER,
-          ].filter((layer) => map!.getLayer(layer));
-          const hit = layers.length
-            ? map!.queryRenderedFeatures(e.point, { layers })[0]
-            : null;
-          if (hit?.layer.id === NETWORK_LAYER && networkRef.current) {
-            const edgeId = hit.properties?.edge_id;
-            if (typeof edgeId === "string") {
-              select(null);
-              setRoadSelection({ networkId: networkRef.current.id, edgeId });
-              return;
-            }
-          }
-          const feature = basemapAt(e.point);
-          const converted =
-            feature &&
-            componentFromBasemap(feature, pointerRay(map!, e.lngLat));
-          if (
-            converted &&
-            !isEditable(areasRef.current, [converted.x, converted.y])
-          ) {
-            select(null);
-            setNotice(READ_ONLY);
-            return;
-          }
-          if (converted) {
-            commit([...sceneRef.current, converted]);
-            id = converted.id;
-            setNotice(`This ${converted.kind} from the map is now editable.`);
-            select(id);
-            setMenu(menuAt(map!, id, e.point.x, e.point.y));
-            return;
-          }
-        }
-        if (id && !editableId(id)) {
-          select(null);
-          setNotice(READ_ONLY);
-          return;
-        }
-        select(id);
-        if (id) {
-          setMenu(menuAt(map!, id, e.point.x, e.point.y));
-          setNotice("Edit its properties, or drag it to move.");
-        }
+        inspect(pick, e.point);
       });
       map.on("dragstart", () => setMenu(null));
       map.on("zoomstart", () => setMenu(null));
