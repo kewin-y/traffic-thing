@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { Skeleton } from "@/components/ui/skeleton";
 
-// WebGL and localStorage are browser-only, so the editor skips server rendering.
+// WebGL is browser-only, so the editor skips server rendering.
 export const EditorLoader = dynamic(
   () => import("./intersection-editor").then((mod) => mod.IntersectionEditor),
   {

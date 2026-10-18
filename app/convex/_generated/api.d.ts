@@ -17,6 +17,9 @@ import type * as networks_queries from "../networks/queries.js";
 import type * as numbers_actions from "../numbers/actions.js";
 import type * as numbers_mutations from "../numbers/mutations.js";
 import type * as numbers_queries from "../numbers/queries.js";
+import type * as projects_lib_access from "../projects/lib/access.js";
+import type * as projects_mutations from "../projects/mutations.js";
+import type * as projects_queries from "../projects/queries.js";
 
 import type {
   ApiFromModules,
@@ -34,6 +37,9 @@ declare const fullApi: ApiFromModules<{
   "numbers/actions": typeof numbers_actions;
   "numbers/mutations": typeof numbers_mutations;
   "numbers/queries": typeof numbers_queries;
+  "projects/lib/access": typeof projects_lib_access;
+  "projects/mutations": typeof projects_mutations;
+  "projects/queries": typeof projects_queries;
 }>;
 
 /**

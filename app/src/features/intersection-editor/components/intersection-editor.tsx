@@ -44,15 +44,13 @@ import {
   NETWORK_SOURCE,
   type LoadedNetwork,
 } from "../lib/network";
-import { loadEditorScene, SCENE_STORAGE_KEY } from "../lib/scene-storage";
+import type { ProjectState } from "../../../../shared/projects";
 import {
   addArea,
   dominantBearing,
-  EDIT_AREAS_STORAGE_KEY,
   fitEdges,
   holeMask,
   isEditable,
-  loadEditAreas,
   unionPath,
   type EditArea,
 } from "../lib/edit-areas";
@@ -74,7 +72,6 @@ import { ToolIcon } from "./tool-icon";
 import { NetworkPanel } from "./network-panel";
 import { PANEL_DEFAULT_WIDTH, SidePanel, type PanelTab } from "./side-panel";
 
-const MEASURE_KEY = "traffic-thing:measurements:v1";
 const TOOL_MIME = "application/x-traffic-thing-tool";
 const LAYER_IDS = ["solid", "marking", "ground"] as const;
 const HIGHLIGHT = "#ffc94d";
@@ -268,24 +265,6 @@ function hiddenBuildings(scene: SceneComponent[]): HiddenBuilding[] {
   });
 }
 
-function load<T>(key: string, fallback: () => T): T {
-  try {
-    const saved = JSON.parse(localStorage.getItem(key) ?? "null");
-    if (Array.isArray(saved) && saved.length) return saved as T;
-  } catch {
-    // Corrupt or unavailable storage: fall back to the default.
-  }
-  return fallback();
-}
-
-function save(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Storage full or disabled; editing still works for this session.
-  }
-}
-
 function easeOutBack(t: number) {
   const c = 1.6;
   return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2;
@@ -438,9 +417,20 @@ function resized(
   };
 }
 
-export function IntersectionEditor() {
-  const [scene, setScene] = useState<SceneComponent[]>(loadEditorScene);
-  const [areas, setAreas] = useState<EditArea[]>(loadEditAreas);
+export function IntersectionEditor({
+  initialState,
+  networkReference,
+  onStateChange,
+}: {
+  initialState: ProjectState;
+  networkReference: { name: string; version: string } | null;
+  onStateChange: (state: ProjectState) => void;
+}) {
+  const [scene, setScene] = useState<SceneComponent[]>(initialState.scene);
+  const [areas, setAreas] = useState<EditArea[]>(initialState.areas);
+  const [camera, setCamera] = useState(initialState.camera);
+  const initialCamera = useRef(initialState.camera);
+
   const [selectingArea, setSelectingArea] = useState(false);
   const [controlsReady, setControlsReady] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
@@ -453,14 +443,17 @@ export function IntersectionEditor() {
     x1: number;
     y1: number;
   } | null>(null);
-  const network = useRoadNetwork();
+  const network = useRoadNetwork(networkReference);
   const [roadSelection, setRoadSelection] = useState<{
     networkId: string;
     edgeId: string;
   } | null>(null);
-  const [measurements, setMeasurements] = useState<Measurement[]>(() =>
-    load(MEASURE_KEY, () => []),
+  const [measurements, setMeasurements] = useState<Measurement[]>(
+    initialState.measurements,
   );
+  useEffect(() => {
+    onStateChange({ ...initialState, scene, areas, measurements, camera });
+  }, [initialState, scene, areas, measurements, camera, onStateChange]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [draggingTool, setDraggingTool] = useState<ComponentKind | null>(null);
@@ -713,17 +706,39 @@ export function IntersectionEditor() {
       map = new maplibregl.Map({
         container: containerRef.current,
         style: basemapStyleUrl(),
-        center: [ORIGIN.lng, ORIGIN.lat],
-        zoom: 17,
-        pitch: 58,
-        bearing: GRID_BEARING - 25,
+        center: [initialCamera.current.lng, initialCamera.current.lat],
+        zoom: initialCamera.current.zoom,
+        pitch: initialCamera.current.pitch,
+        bearing: initialCamera.current.bearing,
         maxPitch: 80,
         minZoom: 13,
         maxZoom: 20,
-        maxBounds: DOWNTOWN_BOUNDS,
+        // A saved camera may lie in the imported network's wider buffer.
+        // Keep it intact until the exact network bounds have loaded.
+        maxBounds: [
+          [
+            Math.min(DOWNTOWN_BOUNDS[0][0], initialCamera.current.lng - 0.001),
+            Math.min(DOWNTOWN_BOUNDS[0][1], initialCamera.current.lat - 0.001),
+          ],
+          [
+            Math.max(DOWNTOWN_BOUNDS[1][0], initialCamera.current.lng + 0.001),
+            Math.max(DOWNTOWN_BOUNDS[1][1], initialCamera.current.lat + 0.001),
+          ],
+        ],
         canvasContextAttributes: { antialias: true },
       });
       mapRef.current = map;
+      map.on("moveend", () => {
+        if (!map) return;
+        const center = map.getCenter();
+        setCamera({
+          lng: center.lng,
+          lat: center.lat,
+          zoom: map.getZoom(),
+          pitch: map.getPitch(),
+          bearing: map.getBearing(),
+        });
+      });
       map.on("error", (e) => {
         // Only a missing style is fatal; a failed icon or tile is not.
         const url = (e.error as { url?: string } | undefined)?.url ?? "";
@@ -1035,17 +1050,15 @@ export function IntersectionEditor() {
     );
   }, [scene, controlsReady]);
 
-  // Outline, unmask and persist the editable areas whenever they change.
+  // Outline and unmask the editable areas whenever they change.
   useEffect(() => {
     areasRef.current = areas;
-    save(EDIT_AREAS_STORAGE_KEY, areas);
     drawGrey();
   }, [areas, mapReady, drawGrey]);
 
-  // Redraw and persist whenever the scene changes.
+  // Redraw whenever the scene changes.
   useEffect(() => {
     if (mapReady && frameRef.current === null) draw();
-    save(SCENE_STORAGE_KEY, scene);
   }, [scene, mapReady, draw]);
 
   useEffect(() => {
@@ -1065,7 +1078,6 @@ export function IntersectionEditor() {
         Math.max(DOWNTOWN_BOUNDS[1][1], data.bounds[1][1] + 0.01),
       ],
     ]);
-    showNetwork(map, data);
     return () => {
       networkRef.current = null;
       if (mapRef.current !== map) return;
@@ -1163,7 +1175,6 @@ export function IntersectionEditor() {
   // Measurement lines and their labels.
   useEffect(() => {
     measurementsRef.current = measurements;
-    save(MEASURE_KEY, measurements);
     const map = mapRef.current;
     const lib = libRef.current;
     if (!mapReady || !map || !lib) return;

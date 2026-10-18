@@ -32,7 +32,7 @@ export function NetworkPanel({
           {network.status === "loading" && "Loading imported roads…"}
           {network.status === "signed-out" && "Sign in to load imported roads."}
           {network.status === "missing" &&
-            "No road network has been published yet."}
+            "This project’s road network is unavailable."}
           {network.status === "error" && "Imported roads could not load."}
           {network.data &&
             `${network.data.edgeCount.toLocaleString()} road segments · select a road to inspect it`}

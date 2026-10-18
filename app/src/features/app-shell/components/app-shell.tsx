@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { AppSidebar } from "@/features/app-shell/components/app-sidebar";
 import { UserMenu } from "@/features/auth/components/user-menu";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -21,6 +22,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
 function AppShellContent({ children }: { children: React.ReactNode }) {
   const { state, isMobile, openMobile } = useSidebar();
+  const isProject = usePathname().startsWith("/project/");
   return (
     <SidebarInset className="min-w-0 overflow-clip">
       <a
@@ -42,7 +44,9 @@ function AppShellContent({ children }: { children: React.ReactNode }) {
               }
               aria-expanded={isMobile ? openMobile : state === "expanded"}
             />
-            <span className="text-sm font-medium">Overview</span>
+            <span className="text-sm font-medium">
+              {isProject ? "Project" : "Dashboard"}
+            </span>
             <span className="hidden text-xs text-muted-foreground sm:inline">
               / Personal workspace
             </span>
