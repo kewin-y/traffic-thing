@@ -9,6 +9,8 @@ interface Props {
   network: ReturnType<typeof useRoadNetwork>;
   selectedRoad: Feature<LineString, RoadProperties> | null;
   onClearSelection: () => void;
+  /** Turn the selected edge into an editable scene component. */
+  onEditRoad?: (edgeId: string) => void;
   /** Pixels taken by the open side panel on the right, or null if closed. */
   panelInset: number | null;
   leftInset?: number;
@@ -18,6 +20,7 @@ export function NetworkPanel({
   network,
   selectedRoad,
   onClearSelection,
+  onEditRoad,
   panelInset,
   leftInset = 12,
 }: Props) {
@@ -80,6 +83,17 @@ export function NetworkPanel({
           <p className="mt-3 text-xs text-muted-foreground">
             One direction of travel.
           </p>
+          {onEditRoad && network.data && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-3 w-full"
+              title="Move, resize or delete this road in the scene"
+              onClick={() => onEditRoad(selectedRoad.properties.edge_id)}
+            >
+              Make editable
+            </Button>
+          )}
         </section>
       )}
     </>

@@ -68,10 +68,12 @@ cd ../worker && uv sync --locked
 - **Add**: pick a tool from the left panel, then click the map to place it. Components
   snap to nearby corners and edges — road ends butt together and angles finish
   to match, so joints come out seamless.
-- **Inspect imported roads**: teal roads come from the published SUMO network.
-  Click a segment to highlight one direction of travel and inspect its lane count,
-  speed limit, and length. Selection retains its network version and SUMO edge ID;
-  road simulation edits are not connected yet. The target button fits the network.
+- **Inspect and edit imported roads**: teal roads come from the published SUMO
+  network. Click a segment to highlight one direction of travel and inspect its lane
+  count, speed limit, and length. "Make editable" turns that edge into an editable
+  scene component: delete it to close that direction in simulations, or change its
+  width to change the simulated lane count. Selection retains its network version and
+  SUMO edge ID. The target button fits the network.
 - **Edit buildings**: click an OpenStreetMap building to turn it into an
   editable scene component. Deleting it removes it from the basemap too. OSM street trees
   aren't in the vector tiles, so trees are added with the Tree tool.

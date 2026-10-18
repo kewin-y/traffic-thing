@@ -48,6 +48,7 @@ import { useRoadNetwork } from "../hooks/use-road-network";
 import {
   NETWORK_LAYER,
   NETWORK_SOURCE,
+  componentFromNetworkEdge,
   type LoadedNetwork,
 } from "../lib/network";
 import type { ProjectState } from "../../../../shared/projects";
@@ -798,6 +799,48 @@ export function IntersectionEditor({
     [commit, select],
   );
 
+  /** Turn a selected network edge into an editable road component. */
+  const editNetworkRoad = useCallback(
+    (edgeId: string) => {
+      const data = network.data;
+      if (!data) return;
+      const existing = sceneRef.current.find(
+        (c) => c.osmId === `edge/${edgeId}`,
+      );
+      if (existing) {
+        select(existing.id);
+        return;
+      }
+      const edge = data.roads.features.find(
+        (feature) => feature.properties.edge_id === edgeId,
+      );
+      if (!edge) return;
+      const middle =
+        edge.geometry.coordinates[Math.floor(edge.geometry.coordinates.length / 2)];
+      if (
+        !isEditable(
+          areasRef.current,
+          toLocal(middle[0], middle[1]),
+        )
+      ) {
+        setNotice(READ_ONLY);
+        return;
+      }
+      const created = componentFromNetworkEdge(edge);
+      if (breaksSidewalkRule([...sceneRef.current, created], new Set([created.id]))) {
+        setNotice(SIDEWALK_RULE);
+        return;
+      }
+      growingRef.current.set(created.id, performance.now());
+      commit([...sceneRef.current, created]);
+      select(created.id);
+      setNotice(
+        `Now editing ${edge.properties.name || "this road"}. Change or delete it like any other road.`,
+      );
+    },
+    [network.data, commit, select],
+  );
+
   /**
    * Cut the editable areas out of the grey overlay and outline them, following
    * the camera. Overlapping areas merge: only the outer edge is outlined.
@@ -1265,6 +1308,28 @@ export function IntersectionEditor({
       }
     };
   }, [mapReady, selectedRoad]);
+
+  // Hide imported network edges the scene has made editable or deleted.
+  const overriddenEdges = useMemo(
+    () => [
+      ...new Set(
+        scene.flatMap((c) =>
+          typeof c.osmId === "string" && c.osmId.startsWith("edge/")
+            ? [c.osmId.slice("edge/".length)]
+            : [],
+        ),
+      ),
+    ],
+    [scene],
+  );
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map || !map.getLayer(NETWORK_LAYER)) return;
+    map.setFilter(NETWORK_LAYER, [
+      "!",
+      ["in", ["get", "edge_id"], ["literal", overriddenEdges]],
+    ]);
+  }, [overriddenEdges, mapReady, network.data]);
 
   // Hide basemap buildings and roads that were converted or deleted.
   useEffect(() => {
@@ -2075,6 +2140,7 @@ export function IntersectionEditor({
         leftInset={leftPanelInset}
         selectedRoad={selectedRoad}
         onClearSelection={() => setRoadSelection(null)}
+        onEditRoad={editNetworkRoad}
         panelInset={panelOpen ? panelWidth + 12 : null}
       />
 

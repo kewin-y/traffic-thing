@@ -126,7 +126,7 @@ function longestLine(geometry: Geometry): Position[] | null {
 }
 
 /** Relative coordinates around the points' centroid. */
-function centred(points: Vec2[]): { x: number; y: number; relative: Vec2[] } {
+export function centred(points: Vec2[]): { x: number; y: number; relative: Vec2[] } {
   const x = points.reduce((sum, p) => sum + p[0], 0) / points.length;
   const y = points.reduce((sum, p) => sum + p[1], 0) / points.length;
   const round = (v: number) => Math.round(v * 100) / 100;

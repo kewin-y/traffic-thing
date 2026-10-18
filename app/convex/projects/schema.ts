@@ -15,6 +15,7 @@ export const projectState = v.object({
       rotation: v.number(),
       length: v.optional(v.number()),
       width: v.optional(v.number()),
+      laneCount: v.optional(v.number()),
       height: v.optional(v.number()),
       speedKmh: v.optional(v.number()),
       hours: v.optional(v.string()),

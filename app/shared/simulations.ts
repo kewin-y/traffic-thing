@@ -20,6 +20,15 @@ export const defaultSimulationSettings: SimulationSettings = {
   record: false,
 };
 const metric = z.number().finite().nonnegative().nullable();
+/** Road edits the app derives from the scene and the worker applies to SUMO. */
+export const workerEditSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("set_speed_limit"), edge_id: z.string().min(1), speed_mps: z.number().gt(0) }),
+  z.object({ type: z.literal("set_lane_count"), edge_id: z.string().min(1), lane_count: z.number().int().min(1) }),
+  z.object({ type: z.literal("close_edge"), edge_id: z.string().min(1) }),
+]);
+export type WorkerEdit = z.infer<typeof workerEditSchema>;
+/** `edge/…` osmId prefix used by scene components that override network edges. */
+export const EDGE_OVERRIDE_PREFIX = "edge/";
 export const workerResultSchema = z.object({
   request_id: z.string().min(1),
   network: z.string().min(1),
@@ -34,7 +43,7 @@ export const workerResultSchema = z.object({
   average_trip_duration_seconds: metric,
   average_waiting_time_seconds: metric,
   average_time_loss_seconds: metric,
-  applied_edits: z.array(z.unknown()).max(0),
+  applied_edits: z.array(workerEditSchema),
   timeline: z
     .object({
       storage_id: z.string().min(1),

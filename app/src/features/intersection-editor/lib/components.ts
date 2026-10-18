@@ -39,6 +39,8 @@ export interface SceneComponent {
   rotation: number;
   length?: number;
   width?: number;
+  /** Lane count of the published network edge this component overrides. */
+  laneCount?: number;
   height?: number;
   speedKmh?: number;
   /** When a timed sign applies, in OpenStreetMap opening-hours syntax. */

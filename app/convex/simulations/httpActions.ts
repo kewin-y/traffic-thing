@@ -8,10 +8,14 @@ export const claim = httpAction(async (ctx, request) => {
   const denied = await authenticateWorker(request);
   if (denied) return denied;
   const run = await ctx.runMutation(internal.simulations.mutations.claim, {});
+  if (!run)
+    return Response.json(null, { headers: { "Cache-Control": "no-store" } });
+  const edits = await ctx.runQuery(
+    internal.simulations.queries.editsForRun,
+    { runId: run._id },
+  );
   return Response.json(
-    run
-      ? { runId: run._id, leaseId: run.attempts, request: workerRequest(run) }
-      : null,
+    { runId: run._id, leaseId: run.attempts, request: workerRequest(run, edits) },
     { headers: { "Cache-Control": "no-store" } },
   );
 });
@@ -64,7 +68,11 @@ export const complete = httpAction(async (ctx, request) => {
     return Response.json({ accepted: false });
   try {
     if (data.result !== undefined) {
-      const parsed = parseWorkerResult(data.result, run);
+      const edits = await ctx.runQuery(
+        internal.simulations.queries.editsForRun,
+        { runId: run._id },
+      );
+      const parsed = parseWorkerResult(data.result, run, edits);
       await ctx.runMutation(internal.simulations.mutations.finish, {
         runId: run._id,
         leaseId: data.leaseId,
