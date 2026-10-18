@@ -16,6 +16,7 @@ from typing import Any
 from .assets import network_assets
 from .models import SimulationRequest
 
+from .demand import sample_demand
 
 class _TimelineWriter:
     """Stream sampled simulation state into a compressed JSON timeline."""
@@ -286,8 +287,14 @@ def run_simulation(
         with TemporaryDirectory(prefix="traffic-worker-") as directory:
             scratch = Path(directory)
             network = _edited_network(request, source, scratch)
-            return _simulate(request, network, demand, scratch, timeline_path)
-
+            edgedata = os.environ.get("PREDICTED_EDGEDATA_PATH")
+            if edgedata:
+                sampled = scratch / "predicted_demand.rou.xml"
+                sample_demand(demand, Path(edgedata), request.duration_seconds, request.seed, sampled)
+                demand = sampled
+            result = _simulate(request, network, demand, scratch, timeline_path)
+            result["demand_source"] = "model" if edgedata else "mounted"
+            return result
 
 def main() -> int:
     request = SimulationRequest.model_validate_json(sys.stdin.buffer.read())

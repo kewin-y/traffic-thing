@@ -18,6 +18,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from traffic_worker.assets import network_assets
 from traffic_worker.models import SimulationRequest
+from traffic_worker.predictor import Predictor   # new
+
+import tempfile
+from traffic_worker.demand import write_edgedata
+
 
 logger = logging.getLogger(__name__)
 bearer = HTTPBearer(auto_error=False)
@@ -45,6 +50,14 @@ async def lifespan(app: FastAPI):
     app.state.network_root = Path(os.environ.get("NETWORK_ROOT", "/data/networks"))
     app.state.timeline_root = Path(os.environ.get("TIMELINE_ROOT", "/data/timelines"))
     app.state.timeline_root.mkdir(parents=True, exist_ok=True)
+
+    model_root = Path(os.environ.get("MODEL_ROOT", "/data/model"))      # new
+
+    app.state.model_network = os.environ.get("MODEL_NETWORK", "toronto-downtown")
+    app.state.predictor = Predictor(model_root) if model_root.is_dir() else None
+    if app.state.predictor is None:
+        logger.warning("MODEL_ROOT not found; predictions disabled")
+
     yield
 
 
@@ -67,7 +80,6 @@ def authenticate(
 def health() -> dict[str, str]:
     return {"status": "ok", "sumo_version": version("eclipse-sumo")}
 
-
 @app.post("/simulate", dependencies=[Depends(authenticate)])
 def simulate(payload: SimulationRequest, request: Request) -> dict:
     if payload.record and not request.app.state.convex_site_url:
@@ -82,6 +94,7 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
     if not request.app.state.slots.acquire(blocking=False):
         raise HTTPException(503, "Worker is busy", headers={"Retry-After": "1"})
     timeline_id = uuid.uuid4().hex if payload.record else None
+    scratch = None
     timeline_path = (
         request.app.state.timeline_root / f"{timeline_id}.json.gz"
         if timeline_id
@@ -91,6 +104,24 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
     try:
         child_environment = os.environ.copy()
         child_environment.pop("TIMELINE_OUTPUT_PATH", None)
+
+        prediction = None
+        predictor = request.app.state.predictor
+        if predictor is not None and payload.network == request.app.state.model_network:
+            try:
+                edited, closed, skipped = predictor.apply_request_edits(payload.edits)
+                volumes = predictor.predict_edited(edited, closed)
+                scratch = tempfile.TemporaryDirectory(prefix="traffic-worker-model-")
+                edgedata_path = Path(scratch.name) / "edgedata.xml"
+                write_edgedata(
+                    zip(volumes["edge_id"], volumes["veh_per_hour"]),
+                    closed, payload.duration_seconds, edgedata_path,
+                )
+                child_environment["PREDICTED_EDGEDATA_PATH"] = str(edgedata_path)
+                prediction = {"changes": predictor.compare(volumes), "unmodelled_edge_ids": skipped}
+            except Exception:
+                logger.exception("Model prediction failed; using mounted demand")
+
         if timeline_path:
             child_environment["TIMELINE_OUTPUT_PATH"] = str(timeline_path)
         with subprocess.Popen(
@@ -131,6 +162,8 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
                 500, "Simulation runner returned an invalid result"
             ) from None
 
+        result["prediction"] = prediction
+
         if timeline_id and timeline_path:
             if not timeline_path.is_file():
                 logger.error("Recorded simulation did not produce a timeline")
@@ -163,6 +196,7 @@ def simulate(payload: SimulationRequest, request: Request) -> dict:
             timeline_path.with_name(f"{timeline_path.name}.partial").unlink(
                 missing_ok=True
             )
+        if scratch is not None: scratch.cleanup()
         request.app.state.slots.release()
 
 
