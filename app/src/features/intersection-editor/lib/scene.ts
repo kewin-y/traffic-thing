@@ -67,9 +67,8 @@ export function describe(c: SceneComponent): string {
     const { arm, direction } = lanePlacement(c);
     return `${label} · ${ARM_LABEL[arm]}, ${direction}`;
   }
-  if (c.kind === "speed_sign") {
-    return `${label} ${c.speedKmh ?? 40} km/h · ${ARM_LABEL[armAt(c.x, c.y)]}`;
-  }
+  if (c.kind === "speed_sign") return `${label} ${c.speedKmh ?? 40} km/h`;
+  if (c.hours) return `${label} (${c.hours})`;
   return c.osmId !== undefined ? `${label} (from the map)` : label;
 }
 

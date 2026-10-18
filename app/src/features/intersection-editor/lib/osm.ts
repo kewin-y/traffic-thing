@@ -6,7 +6,7 @@ import type {
   Position,
 } from "geojson";
 import type { SceneComponent } from "./components";
-import { toLocal, type Vec2 } from "./geometry";
+import { pointInRing, toLocal, type Vec2 } from "./geometry";
 import { newId } from "./scene";
 
 // Approximate carriageway widths by OpenMapTiles `class`.
@@ -52,17 +52,6 @@ function outerRings(geometry: Geometry): Vec2[][] {
     );
 }
 
-function contains(ring: Vec2[], [px, py]: Vec2): boolean {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i];
-    const [xj, yj] = ring[j];
-    if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi)
-      inside = !inside;
-  }
-  return inside;
-}
-
 function centroid(points: Vec2[]): Vec2 {
   return [
     points.reduce((sum, p) => sum + p[0], 0) / points.length,
@@ -83,7 +72,7 @@ function pickRing(rings: Vec2[][], ray: PointerRay, height: number) {
   for (let i = 0; i <= steps; i++) {
     const t = Math.min(1, (height * (1 - i / steps)) / ray.altitude);
     const point: Vec2 = [gx + (cx - gx) * t, gy + (cy - gy) * t];
-    const hit = rings.find((ring) => contains(ring, point));
+    const hit = rings.find((ring) => pointInRing(point, ring));
     if (hit) return hit;
   }
   const distance = (ring: Vec2[]) => {
@@ -127,7 +116,7 @@ export function remainingBuildings(
       const middle = centroid(
         outer.slice(0, -1).map(([lng, lat]) => toLocal(lng, lat)),
       );
-      if (own.some((h) => contains(h.outline, middle))) continue;
+      if (own.some((h) => pointInRing(middle, h.outline))) continue;
       result.push({
         type: "Feature",
         properties: { ...feature.properties, osmId: feature.id },

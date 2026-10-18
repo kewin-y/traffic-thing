@@ -26,8 +26,8 @@ test("new scenes start empty", () => {
 
 test("legacy demo is removed while user-added objects and the old save survive", () => {
   const custom = {
-    id: "tree-1a2b3c4d",
-    kind: "tree",
+    id: "bench-1a2b3c4d",
+    kind: "bench",
     x: 10,
     y: 10,
     rotation: 0,
@@ -82,4 +82,12 @@ test("unavailable or corrupt storage does not prevent opening the map", () => {
     },
   });
   expect(loadEditorScene()).toEqual([]);
+});
+
+test("saved trees become green areas where they stood", () => {
+  const tree = { id: "tree-5e6f7a8b", kind: "tree", x: 3, y: 4, rotation: 0 };
+  storage({ [SCENE_STORAGE_KEY]: JSON.stringify([tree]) });
+  expect(loadEditorScene()).toEqual([
+    { ...tree, kind: "green_area", length: 6, width: 6 },
+  ]);
 });

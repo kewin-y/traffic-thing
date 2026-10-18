@@ -19,6 +19,17 @@ function isUserComponent(component: SceneComponent | null): boolean {
   );
 }
 
+/** Trees were replaced by resizable green areas; keep each where it stood. */
+function withoutTrees(component: SceneComponent): SceneComponent {
+  if ((component.kind as string) !== "tree") return component;
+  return {
+    ...component,
+    kind: "green_area",
+    length: component.length ?? 6,
+    width: component.width ?? 6,
+  };
+}
+
 function read(key: string): SceneComponent[] | null {
   const saved = JSON.parse(localStorage.getItem(key) ?? "null");
   return Array.isArray(saved) ? saved : null;
@@ -30,7 +41,7 @@ export function loadEditorScene(): SceneComponent[] {
     // carried into it before this check existed. The legacy key is left intact
     // so the original scene stays recoverable.
     const saved = read(SCENE_STORAGE_KEY) ?? read(LEGACY_STORAGE_KEY) ?? [];
-    return saved.filter(isUserComponent);
+    return saved.filter(isUserComponent).map(withoutTrees);
   } catch {
     return [];
   }
