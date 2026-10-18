@@ -1,4 +1,4 @@
-import { outlines, type SceneComponent } from "./components";
+import { outlines, ROADWAY_KINDS, type SceneComponent } from "./components";
 import type { Vec2 } from "./geometry";
 
 /**
@@ -104,4 +104,22 @@ export function gapBetween(a: SceneComponent, b: SceneComponent): Gap | null {
 /** Distance between component centres. */
 export function centreDistance(a: SceneComponent, b: SceneComponent) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/** Whether `next` puts a changed sidewalk on a roadway, or a changed roadway under a sidewalk. */
+export function breaksSidewalkRule(
+  next: SceneComponent[],
+  changed: Set<string>,
+): boolean {
+  const sidewalks = next.filter((c) => c.kind === "sidewalk");
+  const roadway = next.filter(
+    (c) => ROADWAY_KINDS.includes(c.kind) && !c.osmId,
+  );
+  return sidewalks.some((s) =>
+    roadway.some(
+      (r) =>
+        (changed.has(s.id) || changed.has(r.id)) &&
+        componentsOverlap(s, r, 0.05),
+    ),
+  );
 }

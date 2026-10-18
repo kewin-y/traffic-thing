@@ -32,7 +32,7 @@ runtime and native dependencies.
 
 Without Nix, install these before running anything:
 
-- **Node.js 20+** and **pnpm** (`npm install -g pnpm`): the frontend.
+- **Node.js 22+** and **pnpm** (`npm install -g pnpm`): the frontend.
 - **uv** ([install guide](https://docs.astral.sh/uv/getting-started/installation/)): it
   provisions Python 3.12 and the worker's packages, including SUMO itself
   (`eclipse-sumo`, `sumolib`, `traci`, `libsumo` 1.28), so no separate SUMO install is needed.

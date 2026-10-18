@@ -5,7 +5,7 @@ import {
 import { v } from "convex/values";
 import { query } from "../_generated/server";
 import { projectDocument, projectState } from "./schema";
-import { requireUser } from "./lib/access";
+import { requireProject, requireUser } from "./lib/access";
 
 export const list = query({
   args: { paginationOpts: paginationOptsValidator },
@@ -43,6 +43,25 @@ export const get = query({
     return saved
       ? { project, revision: saved.revision, state: saved.state }
       : null;
+  },
+});
+export const getById = query({
+  args: { id: v.id("projects") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      project: projectDocument,
+      revision: v.number(),
+      state: projectState,
+    }),
+  ),
+  handler: async (ctx, { id }) => {
+    const project = await requireProject(ctx, id);
+    const saved = await ctx.db
+      .query("projectStates")
+      .withIndex("by_projectId", (q) => q.eq("projectId", project._id))
+      .unique();
+    return saved ? { project, revision: saved.revision, state: saved.state } : null;
   },
 });
 

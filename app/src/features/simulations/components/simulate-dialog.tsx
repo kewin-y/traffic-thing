@@ -125,11 +125,12 @@ export function SimulateDialog({
           Run simulation
         </DialogTrigger>
         <DialogContent>
-          <DialogTitle>Run baseline simulation</DialogTitle>
+          <DialogTitle>Run traffic simulation</DialogTitle>
           <DialogDescription>
-            Uses the published road network and synthetic traffic demand. Your
-            map edits are saved in the run snapshot; they are not applied to
-            this simulation.
+            Uses the published road network and synthetic traffic demand.
+            Deleting an imported road closes that direction; resizing its width
+            changes its lane count. Other placed objects are saved in the
+            snapshot but do not affect this run.
           </DialogDescription>
           <form.AppForm>
             <form

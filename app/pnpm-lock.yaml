@@ -8,15 +8,21 @@ importers:
 
   .:
     dependencies:
+      '@ai-sdk/google':
+        specifier: ^4.0.99
+        version: 4.0.99(zod@4.6.5)
       '@base-ui/react':
         specifier: ^1.8.0
         version: 1.8.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@convex-dev/agent':
+        specifier: ^0.7.8
+        version: 0.7.8(@ai-sdk/provider-utils@5.0.62(zod@4.6.5))(@ai-sdk/provider@4.0.29)(ai@7.0.143(zod@4.6.5))(convex-helpers@0.1.128(@standard-schema/spec@1.1.0)(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)
       '@convex-dev/auth':
         specifier: ^0.0.96
         version: 0.0.96(@auth/core@0.41.3)(convex@1.46.0(react@19.3.0))(react@19.3.0)
       '@convex-dev/workpool':
         specifier: ^0.4.14
-        version: 0.4.14(convex-helpers@0.1.128(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)
+        version: 0.4.14(convex-helpers@0.1.128(@standard-schema/spec@1.1.0)(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)
       '@hugeicons/core-free-icons':
         specifier: ^4.3.5
         version: 4.3.5
@@ -29,6 +35,9 @@ importers:
       '@wrksz/themes':
         specifier: ^2.0.3
         version: 2.0.3(next@16.3.8(@babel/core@7.29.7(supports-color@7.2.0))(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)
+      ai:
+        specifier: ^7.0.143
+        version: 7.0.143(zod@4.6.5)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -36,8 +45,11 @@ importers:
         specifier: ^0.4.0
         version: 0.4.0
       convex:
-        specifier: ^1.36.1
+        specifier: ^1.46.0
         version: 1.46.0(react@19.3.0)
+      convex-helpers:
+        specifier: ^0.1.128
+        version: 0.1.128(@standard-schema/spec@1.1.0)(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5)
       maplibre-gl:
         specifier: ^6.14.0
         version: 6.14.0
@@ -110,6 +122,28 @@ importers:
         version: 5.0.5(@edge-runtime/vm@5.0.0)(@types/node@24.19.0)(vite@8.3.4(@types/node@24.19.0)(esbuild@0.27.0)(jiti@2.7.0))
 
 packages:
+
+  '@ai-sdk/gateway@4.0.116':
+    resolution: {integrity: sha512-YK2As2GpxmyHi5w6R4FLepiLcs6MbIMxh6nyTMgHaoHKoM5aWEXvKDe/JqdMQ1ivOy3EPJiEBgRI677YTGxfHQ==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/google@4.0.99':
+    resolution: {integrity: sha512-pa3qI4X807oRAHVrJXfgkNHa4EOXEwOAJJYLVIwBk6PHKUW3S35mr/AvN46czyqn+5XNDwihHSF2iR3YiaV+sQ==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider-utils@5.0.62':
+    resolution: {integrity: sha512-//6sHa6QNQdM2KHOg5pxp1UMFQB4U8cqdw/kSm9BMr0DLeaFgG3TXZfxhpwRZmxgBpOrzMVZ/gwLXH309+Ortw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider@4.0.29':
+    resolution: {integrity: sha512-nV7UpLADtKn9f0xfnxVZAeFEKuNkScJv5rOpHL7qeWe2EwEEBa3pd6P0QVK6D6coCJ0E8FyCgoM50AffTYrzDQ==}
+    engines: {node: '>=22'}
 
   '@alloc/quick-lru@5.3.0':
     resolution: {integrity: sha512-U4+70Pc5ZS9osnCBCE5Jha/ciHM+Yp+CNMNC/7HvYbNRk1Ldd+f7qO65W5qfhu/TCv+/ozljlXXe9Nj8419DMA==}
@@ -287,6 +321,20 @@ packages:
       react-dom: ^17 || ^18 || ^19
     peerDependenciesMeta:
       '@types/react':
+        optional: true
+
+  '@convex-dev/agent@0.7.8':
+    resolution: {integrity: sha512-QlupFEf/oOnBLwm8TXUAuy+cgxKaSNz6mRNESaJabWIbLwKEooMLlXbSo14RiH8CvMJ9l4tOYBoO59QI3Igy3g==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      '@ai-sdk/provider': ^4.0.0
+      '@ai-sdk/provider-utils': ^5.0.0
+      ai: ^7.0.0
+      convex: ^1.46.0
+      convex-helpers: ^0.1.127
+      react: ^18.3.1 || ^19.0.0
+    peerDependenciesMeta:
+      react:
         optional: true
 
   '@convex-dev/auth@0.0.96':
@@ -1021,6 +1069,9 @@ packages:
     resolution: {integrity: sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ==}
     engines: {node: '>=18'}
 
+  '@standard-schema/spec@1.1.0':
+    resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
   '@swc/helpers@0.5.23':
     resolution: {integrity: sha512-5lSsMOTXURePglDfvuAQUqkGek9Hg2kksOYay2m0+XR++b2NWYL/4sWyuvVBIs8oKnJaxkdi9whaL/sqN13afw==}
 
@@ -1280,6 +1331,9 @@ packages:
     resolution: {integrity: sha512-8eQ9R218XORK+KLosnf4bu/QsUXvUyVwTbArg7/0NMB1Pu87OJKvj4nhFblkYE8gQV73mW1dx1ptlPCkwRGa7A==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
 
+  '@ungap/structured-clone@1.4.0':
+    resolution: {integrity: sha512-1mEZtMKPM09vDmQt5y7YvmN2+DFTP7Tg0EWXdic8/C6VRnpb33e4ghisCIE3WZjsE2N8mf+QV1Zqh7ZFYLWInQ==}
+
   '@unrs/resolver-binding-android-arm-eabi@1.12.2':
     resolution: {integrity: sha512-g5T90pqg1bo/7mytQx6F4iBNC0Wsh9cu+z9veDbFjc7HjpesJFWD7QMS0NGStXM075+7dJPPVvBbpZlnrdpi/w==}
     cpu: [arm]
@@ -1400,6 +1454,10 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@vercel/oidc@3.2.0':
+    resolution: {integrity: sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug==}
+    engines: {node: '>= 20'}
+
   '@vitest/mocker@5.0.5':
     resolution: {integrity: sha512-xLL3lkDegJZw+MGoGaCCsFayDZthGgpAtr3Vziyfc4p7xH89K7KRPcRBBh/kEYm0Aqkt5DtTmkYpBtRV/FrHZg==}
     peerDependencies:
@@ -1413,6 +1471,9 @@ packages:
 
   '@vitest/spy@5.0.5':
     resolution: {integrity: sha512-lwJRExuH417257Q5wv9QYugN9IMJkoxcrKrYxGPQkBzl7wlNpTUxD/5yNX4ESKVUIShKPgkGchYPFMWOOk0wzw==}
+
+  '@workflow/serde@4.1.0':
+    resolution: {integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==}
 
   '@wrksz/themes@2.0.3':
     resolution: {integrity: sha512-9oOaicXlp2s1OrX6LP0xTO/uTikHwpTa7/12qJptEqGAQOmdngSzgEe/rlJMPgne6RFxgURjODLCLT8wnLOHBQ==}
@@ -1438,6 +1499,12 @@ packages:
     resolution: {integrity: sha512-lGq+9yr1/GuAWaVYIHRjvvySG5/4VfKIvC8EWxStPdcDh/Ka7FG3twP6v4d5BkravUilhIAsG4Qj83t02LWUPQ==}
     engines: {node: '>=0.4.0'}
     hasBin: true
+
+  ai@7.0.143:
+    resolution: {integrity: sha512-y9QNgCK9QRHRCcHEUNoU2vemJ+q2zFX5M9T7xHCMZutfcWCqZPckkAfDbp+KHwqZDiJs5AqoKazj64cb20m5PA==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
 
   ajv-formats@2.1.1:
     resolution: {integrity: sha512-Wx0Kx52hxE7C18hkMEggYlEifqWZtYaRgouJor+WMdPnQyEK13vgEWyVNup7SoeeoLMsr4kf5h6dOW11I15MUA==}
@@ -2610,6 +2677,9 @@ packages:
 
   json-schema-typed@8.0.2:
     resolution: {integrity: sha512-fQhoXdcvc3V28x7C7BMs4P5+kNlgUURe2jmUT1T//oBRMDrqy1QPelJimwZGo7Hg9VPV3EQV5Bnq4hbFy2vetA==}
+
+  json-schema@0.4.0:
+    resolution: {integrity: sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==}
 
   json-stable-stringify-without-jsonify@1.0.1:
     resolution: {integrity: sha512-Bdboy+l7tA3OGW6FjyFHWkP5LuByj1Tk33Ljyq0axyzdk9//JSi2u3fP1QSmd1KNwq6VOKYGlAu87CisVir6Pw==}
@@ -3817,6 +3887,32 @@ packages:
 
 snapshots:
 
+  '@ai-sdk/gateway@4.0.116(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.29
+      '@ai-sdk/provider-utils': 5.0.62(zod@4.6.5)
+      '@vercel/oidc': 3.2.0
+      zod: 4.6.5
+
+  '@ai-sdk/google@4.0.99(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.29
+      '@ai-sdk/provider-utils': 5.0.62(zod@4.6.5)
+      zod: 4.6.5
+
+  '@ai-sdk/provider-utils@5.0.62(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.29
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.1
+      undici: 7.30.0
+      zod: 4.6.5
+
+  '@ai-sdk/provider@4.0.29':
+    dependencies:
+      json-schema: 0.4.0
+
   '@alloc/quick-lru@5.3.0': {}
 
   '@auth/core@0.41.3':
@@ -4038,6 +4134,17 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.3.0
 
+  '@convex-dev/agent@0.7.8(@ai-sdk/provider-utils@5.0.62(zod@4.6.5))(@ai-sdk/provider@4.0.29)(ai@7.0.143(zod@4.6.5))(convex-helpers@0.1.128(@standard-schema/spec@1.1.0)(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.29
+      '@ai-sdk/provider-utils': 5.0.62(zod@4.6.5)
+      ai: 7.0.143(zod@4.6.5)
+      convex: 1.46.0(react@19.3.0)
+      convex-helpers: 0.1.128(@standard-schema/spec@1.1.0)(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5)
+    optionalDependencies:
+      '@ungap/structured-clone': 1.4.0
+      react: 19.3.0
+
   '@convex-dev/auth@0.0.96(@auth/core@0.41.3)(convex@1.46.0(react@19.3.0))(react@19.3.0)':
     dependencies:
       '@auth/core': 0.41.3
@@ -4070,11 +4177,11 @@ snapshots:
       - supports-color
       - typescript
 
-  '@convex-dev/workpool@0.4.14(convex-helpers@0.1.128(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)':
+  '@convex-dev/workpool@0.4.14(convex-helpers@0.1.128(@standard-schema/spec@1.1.0)(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5))(convex@1.46.0(react@19.3.0))(react@19.3.0)':
     dependencies:
       '@convex-dev/batch-worker': 0.2.2(convex@1.46.0(react@19.3.0))(react@19.3.0)
       convex: 1.46.0(react@19.3.0)
-      convex-helpers: 0.1.128(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5)
+      convex-helpers: 0.1.128(@standard-schema/spec@1.1.0)(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5)
     transitivePeerDependencies:
       - react
 
@@ -4607,6 +4714,8 @@ snapshots:
 
   '@sindresorhus/merge-streams@4.0.0': {}
 
+  '@standard-schema/spec@1.1.0': {}
+
   '@swc/helpers@0.5.23':
     dependencies:
       tslib: 2.8.1
@@ -4889,6 +4998,9 @@ snapshots:
       '@typescript-eslint/types': 8.71.0
       eslint-visitor-keys: 5.0.1
 
+  '@ungap/structured-clone@1.4.0':
+    optional: true
+
   '@unrs/resolver-binding-android-arm-eabi@1.12.2':
     optional: true
 
@@ -4959,6 +5071,8 @@ snapshots:
   '@unrs/resolver-binding-win32-x64-msvc@1.12.2':
     optional: true
 
+  '@vercel/oidc@3.2.0': {}
+
   '@vitest/mocker@5.0.5(vite@8.3.4(@types/node@24.19.0)(esbuild@0.27.0)(jiti@2.7.0))':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
@@ -4969,6 +5083,8 @@ snapshots:
       vite: 8.3.4(@types/node@24.19.0)(esbuild@0.27.0)(jiti@2.7.0)
 
   '@vitest/spy@5.0.5': {}
+
+  '@workflow/serde@4.1.0': {}
 
   '@wrksz/themes@2.0.3(next@16.3.8(@babel/core@7.29.7(supports-color@7.2.0))(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)':
     dependencies:
@@ -4988,6 +5104,13 @@ snapshots:
       acorn: 8.18.0
 
   acorn@8.18.0: {}
+
+  ai@7.0.143(zod@4.6.5):
+    dependencies:
+      '@ai-sdk/gateway': 4.0.116(zod@4.6.5)
+      '@ai-sdk/provider': 4.0.29
+      '@ai-sdk/provider-utils': 5.0.62(zod@4.6.5)
+      zod: 4.6.5
 
   ajv-formats@2.1.1(ajv@8.20.0):
     optionalDependencies:
@@ -5246,10 +5369,11 @@ snapshots:
 
   convert-source-map@2.0.0: {}
 
-  convex-helpers@0.1.128(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5):
+  convex-helpers@0.1.128(@standard-schema/spec@1.1.0)(convex@1.46.0(react@19.3.0))(hono@4.13.12)(react@19.3.0)(typescript@6.0.3)(zod@4.6.5):
     dependencies:
       convex: 1.46.0(react@19.3.0)
     optionalDependencies:
+      '@standard-schema/spec': 1.1.0
       hono: 4.13.12
       react: 19.3.0
       typescript: 6.0.3
@@ -6291,6 +6415,8 @@ snapshots:
   json-schema-typed@7.0.3: {}
 
   json-schema-typed@8.0.2: {}
+
+  json-schema@0.4.0: {}
 
   json-stable-stringify-without-jsonify@1.0.1: {}
 

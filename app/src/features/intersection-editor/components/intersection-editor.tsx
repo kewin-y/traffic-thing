@@ -52,6 +52,8 @@ import {
   type LoadedNetwork,
 } from "../lib/network";
 import type { ProjectState } from "../../../../shared/projects";
+import type { Id } from "@/convex/_generated/dataModel";
+import { applyChatOpsToCurrent, type ChatOp } from "../lib/chat-ops";
 import {
   addArea,
   dominantBearing,
@@ -72,7 +74,7 @@ import {
   type ControlProperties,
 } from "../lib/traffic-controls";
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
-import { componentsOverlap, gapBetween } from "../lib/spatial";
+import { breaksSidewalkRule, gapBetween } from "../lib/spatial";
 import { snapComponent, snapPoint, snapTargets } from "../lib/snap";
 import { ComponentMenu } from "./component-menu";
 import { ToolIcon } from "./tool-icon";
@@ -339,21 +341,6 @@ function isLegacyFilter(filter: unknown): boolean {
   return LEGACY_COMPARISONS.includes(op) && typeof args[0] === "string";
 }
 
-/** Whether `next` puts a changed sidewalk on a roadway, or a changed roadway under a sidewalk. */
-function breaksSidewalkRule(next: SceneComponent[], changed: Set<string>) {
-  const sidewalks = next.filter((c) => c.kind === "sidewalk");
-  const roadway = next.filter(
-    (c) => ROADWAY_KINDS.includes(c.kind) && !c.osmId,
-  );
-  return sidewalks.some((s) =>
-    roadway.some(
-      (r) =>
-        (changed.has(s.id) || changed.has(r.id)) &&
-        componentsOverlap(s, r, 0.05),
-    ),
-  );
-}
-
 /** The pointer's ray into the scene, from the camera through `ground`. */
 function pointerRay(
   map: MapLibreMap,
@@ -465,6 +452,7 @@ export function IntersectionEditor({
   onStateChange,
   historyToolbar,
   componentsTarget,
+  projectId,
   leftPanelInset = 12,
 }: {
   initialState: ProjectState;
@@ -472,6 +460,7 @@ export function IntersectionEditor({
   onStateChange: (state: ProjectState) => void;
   historyToolbar?: HTMLElement | null;
   componentsTarget?: HTMLElement | null;
+  projectId: Id<"projects">;
   leftPanelInset?: number;
 }) {
   const [scene, setScene] = useState<SceneComponent[]>(initialState.scene);
@@ -2318,6 +2307,29 @@ export function IntersectionEditor({
       />
 
       <SidePanel
+        chat={{
+          projectId,
+          getState: () => ({
+            ...initialState,
+            scene: sceneRef.current,
+            areas: areasRef.current,
+            measurements: measurementsRef.current,
+            camera,
+          }),
+          applyOps: (base, ops: ChatOp[]) => {
+            const next = applyChatOpsToCurrent(
+              base,
+              { ...base, scene: sceneRef.current, areas: areasRef.current },
+              ops,
+            );
+            remember(sceneRef.current, areasRef.current);
+            sceneRef.current = next.scene;
+            areasRef.current = next.areas;
+            setScene(next.scene);
+            setAreas(next.areas);
+            select(null);
+          },
+        }}
         open={panelOpen}
         onOpenChange={setPanelOpen}
         tab={panelTab}

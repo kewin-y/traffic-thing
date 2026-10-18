@@ -227,8 +227,9 @@ export function ProjectSession({ data }: { data: ProjectData }) {
                     />
                   </div>
                   <p className="border-t px-5 py-3 text-[11px] leading-relaxed text-muted-foreground">
-                    Baseline network + synthetic demand. Map edits are saved in
-                    snapshots and aren’t applied to runs yet.
+                    Published network + synthetic demand. Imported-road closures
+                    and lane-count changes affect runs; other placed objects
+                    are saved in snapshots only.
                   </p>
                 </>
               ),
@@ -238,6 +239,7 @@ export function ProjectSession({ data }: { data: ProjectData }) {
         <div className="relative flex min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1">
             <EditorLoader
+              projectId={session.project._id}
               initialState={session.autosave.initialState}
               networkReference={session.project.network}
               onStateChange={session.autosave.update}
