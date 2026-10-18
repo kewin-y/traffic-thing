@@ -1731,7 +1731,8 @@ export function IntersectionEditor({
     <div
       role="toolbar"
       aria-label="Map view"
-      className="absolute bottom-3 left-3 z-10 flex overflow-hidden rounded-lg border bg-background/95 shadow-lg backdrop-blur"
+      className="absolute bottom-3 z-10 flex overflow-hidden rounded-lg border bg-background/95 shadow-lg backdrop-blur"
+      style={{ left: leftPanelInset }}
     >
       <Button
         variant="ghost"
