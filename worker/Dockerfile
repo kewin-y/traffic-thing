@@ -55,11 +55,12 @@ RUN groupadd --gid 10001 worker \
     && chown 10001:10001 /data/timelines \
     && chmod 755 /data/timelines
 COPY --from=build /app/.venv /app/.venv
+COPY traffic_gcn_checkpoint.pt traffic_gcn_meta.json street_segments.csv /data/model/
 
 ENV PATH="/app/.venv/bin:$PATH" \
     NETWORK_ROOT=/data/networks \
     TIMELINE_ROOT=/data/timelines \
-    SIMULATION_TIMEOUT_SECONDS=120 \
+    SIMULATION_TIMEOUT_SECONDS=400 \
     MAX_CONCURRENT_SIMULATIONS=1
 USER 10001:10001
 EXPOSE 8000

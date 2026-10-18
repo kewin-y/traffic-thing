@@ -26,6 +26,8 @@ def test_network_version_checks_actual_inputs(tmp_path, monkeypatch):
     from traffic_worker.models import SimulationRequest
     monkeypatch.setenv("NETWORK_ROOT", str(tmp_path))
     monkeypatch.setattr(runner, "_edited_network", lambda request, source, scratch: source)
+    monkeypatch.setattr(runner, "walkable_network", lambda source, scratch, osm: source)
+    monkeypatch.setattr(runner, "write_active_demand", lambda *args: None)
     monkeypatch.setattr(runner, "_simulate", lambda *args: {"completed": 5})
     assert runner.run_simulation(SimulationRequest(network="demo", network_version=version)) == {
         "completed": 5,
@@ -49,6 +51,27 @@ def test_receipts_cache_results_and_lock_duplicate_requests(tmp_path):
     with pytest.raises(ReceiptConflict):
         with claim_receipt(tmp_path, "run-1", {"seed": 43}):
             pass
+
+
+def test_pinned_osm_extract_must_exist_and_match(tmp_path):
+    directory = tmp_path / "demo"
+    directory.mkdir()
+    names = ["network.net.xml", "demand.rou.xml", "source.osm.xml"]
+    hashes = {}
+    for name in names:
+        (directory / name).write_text("<test/>")
+        hashes[name] = hashlib.sha256(b"<test/>").hexdigest()
+    version = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()[:16]
+    (directory / "manifest.json").write_text(json.dumps({
+        "network": "demo", "network_version": version, "sha256": hashes,
+    }))
+    assert verify_network_version(tmp_path, "demo", version) == version
+    (directory / "source.osm.xml").write_text("changed")
+    with pytest.raises(ValueError, match="manifest"):
+        verify_network_version(tmp_path, "demo", version)
+    (directory / "source.osm.xml").unlink()
+    with pytest.raises(ValueError, match="requires source.osm.xml"):
+        verify_network_version(tmp_path, "demo", version)
 
 
 def test_duplicate_api_delivery_executes_once_and_survives_restart(tmp_path, monkeypatch):

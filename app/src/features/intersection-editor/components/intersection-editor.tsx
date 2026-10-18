@@ -76,6 +76,9 @@ import {
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
 import { breaksSidewalkRule, gapBetween } from "../lib/spatial";
 import { snapComponent, snapPoint, snapTargets } from "../lib/snap";
+import { makeFrame } from "../lib/street-life/frame";
+import { usePlayback, type PlaybackRun } from "../hooks/use-playback";
+import { PlaybackBar, PlaybackNotice } from "./playback-bar";
 import { ComponentMenu } from "./component-menu";
 import { ToolIcon } from "./tool-icon";
 import { NetworkPanel } from "./network-panel";
@@ -85,6 +88,7 @@ const LAYER_IDS = ["solid", "marking", "ground"] as const;
 const HIGHLIGHT = "#ffc94d";
 const MEASURE_COLOUR = "#e8338b";
 const GROW_MS = 380;
+const STREET_LIFE_FRAME = makeFrame(ORIGIN.lng, ORIGIN.lat);
 const SIDEWALK_RULE = "Sidewalks can't overlap roads or lanes.";
 const READ_ONLY =
   "This part of the map is greyed out. Use Select area to make it editable.";
@@ -454,6 +458,7 @@ export function IntersectionEditor({
   componentsTarget,
   projectId,
   leftPanelInset = 12,
+  playbackRun = null,
 }: {
   initialState: ProjectState;
   networkReference: { name: string; version: string } | null;
@@ -462,6 +467,11 @@ export function IntersectionEditor({
   componentsTarget?: HTMLElement | null;
   projectId: Id<"projects">;
   leftPanelInset?: number;
+  /**
+   * The run shown in the history panel, played back on the map; "no-runs"
+   * while the history is open but empty.
+   */
+  playbackRun?: PlaybackRun | "no-runs" | null;
 }) {
   const [scene, setScene] = useState<SceneComponent[]>(initialState.scene);
   const [areas, setAreas] = useState<EditArea[]>(initialState.areas);
@@ -495,7 +505,8 @@ export function IntersectionEditor({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<ComponentKind | null>(null);
-  const [mapReady, setMapReady] = useState(false);
+  const [readyMap, setReadyMap] = useState<MapLibreMap | null>(null);
+  const mapReady = readyMap !== null;
   const [basemapFailed, setBasemapFailed] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [measuring, setMeasuring] = useState(false);
@@ -954,7 +965,7 @@ export function IntersectionEditor({
       });
       map.on("load", () => {
         basemapRef.current = addSceneLayers(map!);
-        setMapReady(true);
+        setReadyMap(map!);
       });
       map.on("render", drawGrey);
       const pickAt = (point: { x: number; y: number }) => {
@@ -1423,6 +1434,18 @@ export function IntersectionEditor({
       if (map.getSource(NETWORK_SOURCE)) map.removeSource(NETWORK_SOURCE);
     };
   }, [network.data, mapReady]);
+
+  // Recorded runs play back across the imported network.
+  const playback = usePlayback({
+    map: readyMap,
+    mapReady,
+    run: playbackRun === "no-runs" ? null : playbackRun,
+    frame: STREET_LIFE_FRAME,
+  });
+  const readPlaybackStats = useCallback(
+    () => playback.scene.stats,
+    [playback.scene],
+  );
 
   const selectedRoad = useMemo(() => {
     if (!network.data || roadSelection?.networkId !== network.data.id)
@@ -2137,6 +2160,50 @@ export function IntersectionEditor({
     </div>
   );
 
+  const playbackLeft = leftPanelInset;
+  const playbackRight = panelOpen ? panelWidth + 12 : 12;
+  const playbackStatus =
+    playbackRun === "no-runs" ? "no-runs" : playback.status;
+  const playbackControls =
+    playbackStatus === "ready" && playback.clock ? (
+      <PlaybackBar
+        clock={playback.clock}
+        stats={readPlaybackStats}
+        warmupSeconds={playback.timeline?.warmupSeconds ?? 0}
+        demandSource={playback.timeline?.demandSource ?? null}
+        left={playbackLeft}
+        right={playbackRight}
+      />
+    ) : playbackStatus !== "off" ? (
+      <PlaybackNotice
+        left={playbackLeft}
+        right={playbackRight}
+        duration={
+          playbackRun && playbackRun !== "no-runs"
+            ? playbackRun.durationSeconds
+            : null
+        }
+        busy={playbackStatus === "simulating" || playbackStatus === "loading"}
+      >
+        {
+          {
+            "no-runs":
+              "Run a simulation to watch it here, with every car, cyclist and pedestrian.",
+            simulating:
+              "Simulating… the timeline unlocks when the run finishes.",
+            loading: "Loading the recording…",
+            failed: "This run failed, so there is nothing to play back.",
+            "load-error": "Couldn’t load the recording. Please try again.",
+            unrecorded:
+              "This run wasn’t recorded. Run the simulation again (recording is now on by default) to watch it.",
+            unsupported:
+              "This recording is from an older worker. Run the simulation again to watch it.",
+            ready: null,
+          }[playbackStatus]
+        }
+      </PlaybackNotice>
+    ) : null;
+
   const groups = useMemo(
     () => [...new Set(TOOLS.map((tool) => tool.group))],
     [],
@@ -2160,7 +2227,13 @@ export function IntersectionEditor({
         ref={greyRef}
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-neutral-400/25 backdrop-grayscale"
-        style={{ maskSize: "100% 100%", WebkitMaskSize: "100% 100%" }}
+        style={{
+          maskSize: "100% 100%",
+          WebkitMaskSize: "100% 100%",
+          // Show simulation colors across the network during playback;
+          // editing remains restricted to the selected areas.
+          visibility: playback.status === "ready" ? "hidden" : undefined,
+        }}
       />
       {/* Outer edge of the editable areas: a wide stroke with the areas'
           interior masked out, so overlaps show no inner boundaries. */}
@@ -2523,6 +2596,7 @@ export function IntersectionEditor({
           historyToolbar,
         )}
       {viewControls}
+      {playbackControls}
 
       {basemapFailed && !mapReady && (
         <div

@@ -17,4 +17,6 @@ provides development tools.
 3. Open [localhost:3000](http://localhost:3000), sign in, and create a project.
 
 Publish the network **before creating projects**: each project pins the version
-available at creation. Simulations use synthetic demand and support imported-road closures and lane-count changes.
+available at creation. Simulations use GCN car demand when available, plus synthetic active travel.
+Imported-road closures and lane-count changes affect runs; recorded runs play
+back on the map from history.

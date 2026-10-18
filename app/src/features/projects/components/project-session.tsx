@@ -9,7 +9,7 @@ import {
   SimulationHistory,
   useSimulationHistory,
 } from "@/features/simulations/components/simulation-history";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FunctionReturnType } from "convex/server";
@@ -52,6 +52,36 @@ export function ProjectSession({ data }: { data: ProjectData }) {
   );
   const active = history.results.some(
     (run) => run.status === "queued" || run.status === "running",
+  );
+  // Viewing the history plays the selected run back on the map.
+  const shownRun =
+    historyOpen && leftTab === "history"
+      ? history.results.find(
+          (run) => run._id === (selectedRunId ?? history.results[0]?._id),
+        )
+      : undefined;
+  const shownId = shownRun?._id;
+  const shownStatus = shownRun?.status;
+  const shownRecorded = Boolean(shownRun?.recordingStorageId);
+  const shownDuration = shownRun?.settings.durationSeconds ?? 0;
+  const historyEmpty =
+    historyOpen &&
+    leftTab === "history" &&
+    history.status !== "LoadingFirstPage" &&
+    history.results.length === 0;
+  const playbackRun = useMemo(
+    () =>
+      shownId && shownStatus
+        ? {
+            runId: shownId,
+            status: shownStatus,
+            recorded: shownRecorded,
+            durationSeconds: shownDuration,
+          }
+        : historyEmpty
+          ? ("no-runs" as const)
+          : null,
+    [shownId, shownStatus, shownRecorded, shownDuration, historyEmpty],
   );
   const save = useMutation(api.projects.mutations.save);
   // Keep this editor session stable while Convex publishes our own saves.
@@ -227,9 +257,9 @@ export function ProjectSession({ data }: { data: ProjectData }) {
                     />
                   </div>
                   <p className="border-t px-5 py-3 text-[11px] leading-relaxed text-muted-foreground">
-                    Published network + synthetic demand. Imported-road closures
-                    and lane-count changes affect runs; other placed objects
-                    are saved in snapshots only.
+                    Runs use GCN car demand when available, with synthetic
+                    walking, cycling and scooter trips. Imported-road closures
+                    and lane-count changes affect runs; scenery is visual only.
                   </p>
                 </>
               ),
@@ -246,6 +276,7 @@ export function ProjectSession({ data }: { data: ProjectData }) {
               historyToolbar={historyToolbar}
               componentsTarget={componentsTarget}
               leftPanelInset={historyOpen ? leftWidth + 12 : 12}
+              playbackRun={playbackRun}
             />
           </div>
         </div>

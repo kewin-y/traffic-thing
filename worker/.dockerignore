@@ -8,3 +8,7 @@
 **/*.py[cod]
 **/.env
 **/.env.*
+
+!traffic_gcn_checkpoint.pt
+!traffic_gcn_meta.json
+!street_segments.csv

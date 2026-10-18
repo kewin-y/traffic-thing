@@ -250,6 +250,35 @@ const GLYPHS: Partial<Record<ComponentKind, React.ReactNode>> = {
       <path d="M5 15v5M19 15v5" stroke="#3a3d42" strokeWidth="1.6" />
     </>
   ),
+  tree: (
+    <>
+      <path d="M11 13h2v8h-2z" fill="#6b4a2b" />
+      <circle cx="12" cy="9.5" r="6.5" fill="#4f9a4a" />
+      <circle cx="10" cy="8" r="2.6" fill="#63ad57" />
+    </>
+  ),
+  circle_bench: (
+    <>
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
+        fill="none"
+        stroke="#8a5d32"
+        strokeWidth="1.4"
+      />
+      <circle
+        cx="12"
+        cy="12"
+        r="7.2"
+        fill="none"
+        stroke="#c08850"
+        strokeWidth="2.6"
+      />
+      <circle cx="12" cy="12" r="3.6" fill="#7cb862" />
+      <circle cx="12" cy="12" r="1.1" fill="#6b4a2b" />
+    </>
+  ),
   building: (
     <>
       <path d="M4 8 12 4l8 4v11l-8 3-8-3z" fill="#d9c2a7" />

@@ -187,8 +187,9 @@ export function SimulationHistory({
                         ))}
                       </dl>
                       <p className="text-[11px] leading-relaxed text-muted-foreground">
-                        Averages cover completed trips. {run.result.sumoVersion}
-                        .
+                        Averages cover full trips arriving during the measured
+                        window, including time before it when the worker uses
+                        warm-up. {run.result.sumoVersion}.
                       </p>
                     </>
                   )}

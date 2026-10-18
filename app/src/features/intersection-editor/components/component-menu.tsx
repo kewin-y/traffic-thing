@@ -1,7 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { isResizable, type SceneComponent } from "../lib/components";
+import {
+  CIRCLE_BENCH_DIAMETER,
+  isResizable,
+  THICKNESS,
+  TREE_CROWN,
+  type SceneComponent,
+} from "../lib/components";
 import { describe } from "../lib/scene";
 import { ToolIcon } from "./tool-icon";
 
@@ -28,6 +35,7 @@ export function ComponentMenu({
   const left = Math.max(8, Math.min(x + 8, bounds.width - width - 8));
   const top = Math.max(8, Math.min(y + 8, bounds.height - 260));
   const rotatable = component.kind !== "intersection";
+  const thickness = THICKNESS[component.kind];
 
   return (
     <div
@@ -69,6 +77,16 @@ export function ComponentMenu({
         </div>
       )}
 
+      {thickness && (
+        <Thickness
+          // Remount when another component or an undo changes the width.
+          key={`${component.id}:${component.width}`}
+          value={component.width ?? (component.path ? 7 : thickness.min)}
+          {...thickness}
+          onChange={(width) => onUpdate({ width })}
+        />
+      )}
+
       {isResizable(component) && (
         <div className="grid grid-cols-2 gap-1.5 px-1.5 pb-1.5">
           <Dimension
@@ -77,16 +95,18 @@ export function ComponentMenu({
             min={1}
             onChange={(length) => onUpdate({ length })}
           />
-          <Dimension
-            label="Width"
-            value={component.width!}
-            min={0.3}
-            onChange={(width) => onUpdate({ width })}
-          />
+          {!thickness && (
+            <Dimension
+              label="Width"
+              value={component.width!}
+              min={0.3}
+              onChange={(width) => onUpdate({ width })}
+            />
+          )}
         </div>
       )}
 
-      {component.path && (
+      {component.path && !thickness && (
         <Stepper
           label="Width"
           value={component.width ?? 7}
@@ -95,6 +115,30 @@ export function ComponentMenu({
           min={2}
           max={40}
           onChange={(width) => onUpdate({ width })}
+        />
+      )}
+
+      {component.kind === "tree" && (
+        <Stepper
+          label="Crown"
+          value={component.width ?? TREE_CROWN}
+          unit="m"
+          step={1}
+          min={2}
+          max={16}
+          onChange={(width) => onUpdate({ width })}
+        />
+      )}
+
+      {component.kind === "circle_bench" && (
+        <Stepper
+          label="Diameter"
+          value={component.width ?? CIRCLE_BENCH_DIAMETER}
+          unit="m"
+          step={0.4}
+          min={3}
+          max={8}
+          onChange={(width) => onUpdate({ width: Math.round(width * 10) / 10 })}
         />
       )}
 
@@ -139,6 +183,95 @@ export function ComponentMenu({
       >
         Delete component
       </button>
+    </div>
+  );
+}
+
+/**
+ * Width across a lane, road, sidewalk or crosswalk. The slider previews the
+ * value while dragging and commits once, so one drag is one undo step.
+ */
+function Thickness({
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const round = (v: number) =>
+    Math.round(Math.min(max, Math.max(min, v)) * 100) / 100;
+  const commit = (v: number) => {
+    const next = round(v);
+    setDraft(next);
+    if (next !== value) onChange(next);
+  };
+  return (
+    <div className="px-1.5 pb-2">
+      <div className="mb-1 flex items-center justify-between text-xs">
+        <label htmlFor="component-thickness" className="text-muted-foreground">
+          Thickness
+        </label>
+        <div className="flex items-center gap-1">
+          <Button
+            size="icon-xs"
+            variant="outline"
+            aria-label="Make thinner"
+            disabled={draft <= min}
+            onClick={() => commit(draft - step)}
+          >
+            −
+          </Button>
+          <input
+            type="number"
+            aria-label="Thickness in metres"
+            step={step}
+            min={min}
+            max={max}
+            value={draft}
+            className="h-6 w-14 rounded-md border bg-background px-1 text-center text-xs tabular-nums"
+            onChange={(event) => setDraft(Number(event.target.value))}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+            onBlur={() =>
+              Number.isFinite(draft) ? commit(draft) : setDraft(value)
+            }
+          />
+          <span className="text-muted-foreground">m</span>
+          <Button
+            size="icon-xs"
+            variant="outline"
+            aria-label="Make thicker"
+            disabled={draft >= max}
+            onClick={() => commit(draft + step)}
+          >
+            +
+          </Button>
+        </div>
+      </div>
+      <input
+        id="component-thickness"
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={draft}
+        className="w-full cursor-pointer accent-primary"
+        onChange={(event) => setDraft(Number(event.target.value))}
+        onPointerUp={() => commit(draft)}
+        onKeyUp={() => commit(draft)}
+      />
+      <div className="flex justify-between text-[10px] text-muted-foreground tabular-nums">
+        <span>{min} m</span>
+        <span>{max} m</span>
+      </div>
     </div>
   );
 }
