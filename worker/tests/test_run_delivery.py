@@ -27,7 +27,10 @@ def test_network_version_checks_actual_inputs(tmp_path, monkeypatch):
     monkeypatch.setenv("NETWORK_ROOT", str(tmp_path))
     monkeypatch.setattr(runner, "_edited_network", lambda request, source, scratch: source)
     monkeypatch.setattr(runner, "_simulate", lambda *args: {"completed": 5})
-    assert runner.run_simulation(SimulationRequest(network="demo", network_version=version)) == {"completed": 5}
+    assert runner.run_simulation(SimulationRequest(network="demo", network_version=version)) == {
+        "completed": 5,
+        "demand_source": "mounted",
+    }
     with pytest.raises(ValueError):
         verify_network_version(tmp_path, "demo", "0" * 16)
     (directory / "demand.rou.xml").write_text("modified")

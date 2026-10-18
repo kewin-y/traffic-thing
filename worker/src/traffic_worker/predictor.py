@@ -52,7 +52,11 @@ class Predictor:
 
         self.model = TrafficGCN(len(self.meta["feature_cols"]))
         self.model.load_state_dict(
-            torch.load(model_dir / "traffic_gcn_checkpoint.pt", map_location="cpu")
+            torch.load(
+                model_dir / "traffic_gcn_checkpoint.pt",
+                map_location="cpu",
+                weights_only=True,
+            )
         )
         self.model.eval()
 
@@ -135,9 +139,18 @@ class Predictor:
         new.loc[new["edge_id"].isin(list(closed)), ["veh_per_day", "veh_per_hour"]] = 0.0
         return new
 
-    def compare(self, new: pd.DataFrame, min_abs_change: float = 1.0) -> list[dict]:
-        """Baseline vs edited prediction (output of predict_edited), only where the change is non-trivial."""
+    def compare(
+        self,
+        new: pd.DataFrame,
+        min_abs_change: float = 1.0,
+        max_changes: int = 200,
+    ) -> list[dict]:
+        """Baseline vs edited prediction (output of predict_edited), only where the change is
+        non-trivial. At most max_changes records, largest |delta| first."""
         merged = self.base_pred.merge(new, on="edge_id", suffixes=("_base", "_edited"))
         merged["delta_per_day"] = merged["veh_per_day_edited"] - merged["veh_per_day_base"]
         merged = merged[merged["delta_per_day"].abs() >= min_abs_change]
-        return merged.round(1).to_dict("records")
+        merged = merged.reindex(
+            merged["delta_per_day"].abs().sort_values(ascending=False).index
+        )
+        return merged.head(max_changes).round(1).to_dict("records")

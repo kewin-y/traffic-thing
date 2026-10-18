@@ -5,6 +5,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -17,12 +18,10 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from traffic_worker.assets import network_assets, verify_network_version
-from traffic_worker.receipts import claim_receipt, ReceiptBusy, ReceiptConflict
-from traffic_worker.models import SimulationRequest
-from traffic_worker.predictor import Predictor   # new
-
-import tempfile
 from traffic_worker.demand import write_edgedata
+from traffic_worker.models import SimulationRequest
+from traffic_worker.predictor import Predictor
+from traffic_worker.receipts import claim_receipt, ReceiptBusy, ReceiptConflict
 
 
 logger = logging.getLogger(__name__)
@@ -52,8 +51,8 @@ async def lifespan(app: FastAPI):
     app.state.run_root = Path(os.environ.get("RUN_ROOT", "/data/runs"))
     app.state.timeline_root = Path(os.environ.get("TIMELINE_ROOT", "/data/timelines"))
     app.state.timeline_root.mkdir(parents=True, exist_ok=True)
-    model_root = Path(os.environ.get("MODEL_ROOT", "/data/model"))      # new
 
+    model_root = Path(os.environ.get("MODEL_ROOT", "/data/model"))
     app.state.model_network = os.environ.get("MODEL_NETWORK", "toronto-downtown")
     app.state.predictor = Predictor(model_root) if model_root.is_dir() else None
     if app.state.predictor is None:
@@ -148,10 +147,15 @@ def execute_simulation(payload: SimulationRequest, request: Request) -> dict:
     try:
         child_environment = os.environ.copy()
         child_environment.pop("TIMELINE_OUTPUT_PATH", None)
+        child_environment.pop("PREDICTED_EDGEDATA_PATH", None)
 
         prediction = None
         predictor = request.app.state.predictor
-        if predictor is not None and payload.network == request.app.state.model_network:
+        if (
+            predictor is not None
+            and payload.edits
+            and payload.network == request.app.state.model_network
+        ):
             try:
                 edited, closed, skipped = predictor.apply_request_edits(payload.edits)
                 volumes = predictor.predict_edited(edited, closed)
@@ -161,8 +165,8 @@ def execute_simulation(payload: SimulationRequest, request: Request) -> dict:
                     zip(volumes["edge_id"], volumes["veh_per_hour"]),
                     closed, payload.duration_seconds, edgedata_path,
                 )
-                child_environment["PREDICTED_EDGEDATA_PATH"] = str(edgedata_path)
                 prediction = {"changes": predictor.compare(volumes), "unmodelled_edge_ids": skipped}
+                child_environment["PREDICTED_EDGEDATA_PATH"] = str(edgedata_path)
             except Exception:
                 logger.exception("Model prediction failed; using mounted demand")
 
