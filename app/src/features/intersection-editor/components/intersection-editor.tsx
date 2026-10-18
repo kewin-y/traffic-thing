@@ -72,6 +72,7 @@ import { componentsOverlap, gapBetween } from "../lib/spatial";
 import { ComponentMenu } from "./component-menu";
 import { ToolIcon } from "./tool-icon";
 import { NetworkPanel } from "./network-panel";
+import { PANEL_DEFAULT_WIDTH, SidePanel, type PanelTab } from "./side-panel";
 
 const MEASURE_KEY = "traffic-thing:measurements:v1";
 const TOOL_MIME = "application/x-traffic-thing-tool";
@@ -442,6 +443,10 @@ export function IntersectionEditor() {
   const [areas, setAreas] = useState<EditArea[]>(loadEditAreas);
   const [selectingArea, setSelectingArea] = useState(false);
   const [controlsReady, setControlsReady] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [panelTab, setPanelTab] = useState<PanelTab>("tools");
+  const [panelWidth, setPanelWidth] = useState(PANEL_DEFAULT_WIDTH);
+  const [toolboxOpen, setToolboxOpen] = useState(true);
   const [snip, setSnip] = useState<{
     x0: number;
     y0: number;
@@ -1338,6 +1343,9 @@ export function IntersectionEditor() {
       element.title = "Breaks a planning guideline; click for details";
       element.className =
         "flex size-11 items-center justify-center rounded-full border-[3px] border-white bg-red-600 text-2xl font-black text-white shadow-xl ring-4 ring-red-600/30 hover:bg-red-700";
+      // Lift warnings above the grey read-only overlay so they stay red
+      // everywhere; the panels and selection overlay still sit above them.
+      element.style.zIndex = "2";
       element.addEventListener("click", (event) => {
         event.stopPropagation();
         const point = map.project(toLngLat([component.x, component.y]));
@@ -1430,7 +1438,14 @@ export function IntersectionEditor() {
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.target instanceof HTMLInputElement) return;
+      // Typing in a field (such as the chat box) must not edit the map.
+      const field = event.target;
+      if (
+        field instanceof HTMLInputElement ||
+        field instanceof HTMLTextAreaElement ||
+        (field instanceof HTMLElement && field.isContentEditable)
+      )
+        return;
       if (event.key === "Escape") {
         setMenu(null);
         setIssuePopup(null);
@@ -1664,6 +1679,114 @@ export function IntersectionEditor() {
     );
   }
 
+  /**
+   * Turn a quarter at a time between the four directions of Toronto's street
+   * grid (whose "north" runs up Yonge Street), so streets stay parallel to
+   * the screen. From an in-between angle, the first turn snaps to the grid.
+   */
+  function turn(direction: 1 | -1) {
+    const map = mapRef.current;
+    if (!map) return;
+    const quarters = (map.getBearing() - GRID_BEARING) / 90;
+    const nearest = Math.round(quarters);
+    const next =
+      Math.abs(quarters - nearest) > 0.01 &&
+      Math.sign(nearest - quarters) === direction
+        ? nearest
+        : nearest + direction;
+    map.easeTo({ bearing: GRID_BEARING + next * 90, duration: 600 });
+  }
+
+  const divider = <div aria-hidden className="w-px self-stretch bg-border" />;
+  const viewControls = (
+    <div
+      role="toolbar"
+      aria-label="Map view"
+      className="absolute bottom-3 left-3 z-10 flex overflow-hidden rounded-lg border bg-background/95 shadow-lg backdrop-blur"
+    >
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        aria-label="Zoom in"
+        title="Zoom in"
+        className="rounded-none text-lg"
+        onClick={() => mapRef.current?.zoomIn()}
+      >
+        +
+      </Button>
+      {divider}
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        aria-label="Zoom out"
+        title="Zoom out"
+        className="rounded-none text-lg"
+        onClick={() => mapRef.current?.zoomOut()}
+      >
+        −
+      </Button>
+      {divider}
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        aria-label="Bird's-eye view"
+        title="Bird's-eye view"
+        className="rounded-none"
+        onClick={birdsEye}
+      >
+        <svg viewBox="0 0 24 24" className="size-5" aria-hidden="true">
+          <path
+            d="M2 9c2.6-1.6 5.6-1.2 8 1.6L12 13l2-2.4c2.4-2.8 5.4-3.2 8-1.6-2.8.2-4.6 1.6-6.2 3.8L12 18l-3.8-5.2C6.6 10.6 4.8 9.2 2 9z"
+            fill="currentColor"
+          />
+        </svg>
+      </Button>
+      {divider}
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        aria-label="Turn left to the next street-grid direction"
+        title="Turn left (N, W, S, E)"
+        className="rounded-none text-lg"
+        onClick={() => turn(-1)}
+      >
+        ⟲
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        aria-label="Turn right to the next street-grid direction"
+        title="Turn right (N, E, S, W)"
+        className="rounded-none text-lg"
+        onClick={() => turn(1)}
+      >
+        ⟳
+      </Button>
+      {divider}
+      <Button
+        variant="ghost"
+        size="icon-lg"
+        aria-label="Show imported network"
+        title="Show imported network"
+        className="rounded-none text-xs"
+        onClick={() => {
+          const map = mapRef.current;
+          if (!map) return;
+          if (network.data) showNetwork(map, network.data, true);
+          else
+            map.flyTo({
+              center: [ORIGIN.lng, ORIGIN.lat],
+              zoom: 17,
+              pitch: 58,
+              bearing: GRID_BEARING - 25,
+            });
+        }}
+      >
+        ⌖
+      </Button>
+    </div>
+  );
+
   const groups = useMemo(
     () => [...new Set(TOOLS.map((tool) => tool.group))],
     [],
@@ -1789,18 +1912,41 @@ export function IntersectionEditor() {
         </div>
       )}
 
+      {!toolboxOpen && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="absolute top-3 left-3 z-10 bg-background shadow-lg dark:bg-background"
+          onClick={() => setToolboxOpen(true)}
+        >
+          ＋ Add Components
+        </Button>
+      )}
       <aside
         data-toolbox
         aria-label="Component tools"
-        className="absolute top-3 left-3 z-10 max-h-[calc(100%-1.5rem)] w-[172px] overflow-y-auto rounded-lg border bg-background/95 p-2 shadow-lg backdrop-blur"
+        hidden={!toolboxOpen}
+        className="absolute top-3 left-3 z-10 max-h-[calc(100%-5rem)] w-[150px] overflow-y-auto rounded-lg border bg-background/95 p-1.5 shadow-lg backdrop-blur"
       >
-        <p className="px-1 pb-1 text-xs font-semibold">Add Components</p>
+        <div className="flex items-center justify-between pb-1 pl-1">
+          <p className="text-xs font-semibold">Add Components</p>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Close Add Components"
+            title="Close"
+            className="size-6"
+            onClick={() => setToolboxOpen(false)}
+          >
+            ×
+          </Button>
+        </div>
         {groups.map((group) => (
-          <div key={group} className="pb-2">
+          <div key={group} className="pb-1.5">
             <p className="px-1 pb-1 text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
               {group}
             </p>
-            <div className="grid grid-cols-3 gap-1">
+            <div className="grid grid-cols-3 gap-0.5">
               {TOOLS.filter((tool) => tool.group === group).map((tool) => (
                 <div
                   key={tool.kind}
@@ -1817,126 +1963,139 @@ export function IntersectionEditor() {
                   onDragEnd={() => setDraggingTool(null)}
                   className="flex cursor-grab flex-col items-center gap-0.5 rounded-md border border-transparent p-1 text-center transition hover:border-border hover:bg-muted active:cursor-grabbing"
                 >
-                  <ToolIcon kind={tool.kind} className="size-7" />
-                  <span className="text-[9px] leading-tight">{tool.label}</span>
+                  <ToolIcon kind={tool.kind} className="size-6" />
+                  <span className="text-[8.5px] leading-tight">
+                    {tool.label}
+                  </span>
                 </div>
               ))}
             </div>
           </div>
         ))}
-        <p className="px-1 pt-1 text-[10px] leading-snug text-muted-foreground">
-          Select a highlighted road to inspect it. In an editable area, click a
-          building, signal or sign to edit it.
-        </p>
       </aside>
 
       <NetworkPanel
         network={network}
         selectedRoad={selectedRoad}
         onClearSelection={() => setRoadSelection(null)}
+        panelInset={panelOpen ? panelWidth + 12 : null}
       />
 
-      <div
-        role="toolbar"
-        aria-label="Planning tools"
-        className="absolute top-3 right-3 z-10 flex flex-col gap-1.5"
-      >
-        <div className="flex gap-1.5">
-          <Button
-            variant="outline"
-            className="flex-1 bg-background shadow-lg dark:bg-background"
-            disabled={!history.undo}
-            title="Undo (Ctrl+Z)"
-            onClick={undo}
-          >
-            ↶ Undo
-          </Button>
-          <Button
-            variant="outline"
-            className="flex-1 bg-background shadow-lg dark:bg-background"
-            disabled={!history.redo}
-            title="Redo (Ctrl+Y)"
-            onClick={redo}
-          >
-            ↷ Redo
-          </Button>
-        </div>
-        <Button
-          variant={selectingArea ? "default" : "outline"}
-          className="justify-start shadow-lg not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
-          aria-pressed={selectingArea}
-          title="Drag a rectangle on the map to make that section editable"
-          onClick={() => {
-            const next = !selectingArea;
-            setSelectingArea(next);
-            setSnip(null);
-            setMenu(null);
-            select(null);
-            if (measuringRef.current) toggleMeasuring();
-            setNotice(
-              next
-                ? areasRef.current.length
-                  ? "Drag a rectangle to add an area, or click an area's × to remove it."
-                  : "Drag a rectangle over the part of the map you want to edit."
-                : null,
-            );
-          }}
-        >
-          ⬚ Select area
-        </Button>
-        {areas.length > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="justify-start bg-background shadow-lg dark:bg-background"
-            onClick={() => {
-              commitAreas([]);
-              select(null);
-              setNotice("All areas are read-only again. Undo to restore them.");
-            }}
-          >
-            Clear editable areas
-          </Button>
-        )}
-        <Button
-          variant={measuring ? "default" : "outline"}
-          className="justify-start shadow-lg not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
-          aria-pressed={measuring}
-          onClick={toggleMeasuring}
-        >
-          📏 Measure
-        </Button>
-        {measurements.length > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="justify-start shadow-lg not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
-            onClick={() => setMeasurements([])}
-          >
-            Clear measurements
-          </Button>
-        )}
-        <Button
-          variant={checking ? "default" : "outline"}
-          className="justify-start shadow-lg not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
-          aria-pressed={checking}
-          onClick={() => {
-            const next = !checking;
-            setChecking(next);
-            setIssuePopup(null);
-            if (next) {
-              const found = checkScene(sceneRef.current).length;
-              setNotice(
-                found
-                  ? `${found} component${found === 1 ? "" : "s"} break a planning guideline. Click a ! for details.`
-                  : "No guideline issues found.",
-              );
-            }
-          }}
-        >
-          ⚠ Check
-        </Button>
-      </div>
+      <SidePanel
+        open={panelOpen}
+        onOpenChange={setPanelOpen}
+        tab={panelTab}
+        onTabChange={setPanelTab}
+        width={panelWidth}
+        onWidthChange={setPanelWidth}
+        tools={
+          <>
+            <div className="flex gap-1.5">
+              <Button
+                variant="outline"
+                className="flex-1 bg-background dark:bg-background"
+                disabled={!history.undo}
+                title="Undo (Ctrl+Z)"
+                onClick={undo}
+              >
+                ↶ Undo
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1 bg-background dark:bg-background"
+                disabled={!history.redo}
+                title="Redo (Ctrl+Y)"
+                onClick={redo}
+              >
+                ↷ Redo
+              </Button>
+            </div>
+            <Button
+              variant={selectingArea ? "default" : "outline"}
+              className="justify-start not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
+              aria-pressed={selectingArea}
+              title="Drag a rectangle on the map to make that section editable"
+              onClick={() => {
+                const next = !selectingArea;
+                setSelectingArea(next);
+                setSnip(null);
+                setMenu(null);
+                select(null);
+                if (measuringRef.current) toggleMeasuring();
+                setNotice(
+                  next
+                    ? areasRef.current.length
+                      ? "Drag a rectangle to add an area, or click an area's × to remove it."
+                      : "Drag a rectangle over the part of the map you want to edit."
+                    : null,
+                );
+              }}
+            >
+              ⬚ Select area
+            </Button>
+            {areas.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="justify-start bg-background dark:bg-background"
+                onClick={() => {
+                  commitAreas([]);
+                  select(null);
+                  setNotice(
+                    "All areas are read-only again. Undo to restore them.",
+                  );
+                }}
+              >
+                Clear editable areas
+              </Button>
+            )}
+            <Button
+              variant={measuring ? "default" : "outline"}
+              className="justify-start not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
+              aria-pressed={measuring}
+              onClick={toggleMeasuring}
+            >
+              📏 Measure
+            </Button>
+            {measurements.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="justify-start not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
+                onClick={() => setMeasurements([])}
+              >
+                Clear measurements
+              </Button>
+            )}
+            <Button
+              variant={checking ? "default" : "outline"}
+              className="justify-start not-aria-pressed:bg-background dark:not-aria-pressed:bg-background"
+              aria-pressed={checking}
+              onClick={() => {
+                const next = !checking;
+                setChecking(next);
+                setIssuePopup(null);
+                if (next) {
+                  const found = checkScene(sceneRef.current).length;
+                  setNotice(
+                    found
+                      ? `${found} component${found === 1 ? "" : "s"} break a planning guideline. Click a ! for details.`
+                      : "No guideline issues found.",
+                  );
+                }
+              }}
+            >
+              <span
+                aria-hidden
+                className="flex size-4 items-center justify-center rounded-full border border-white bg-red-600 text-[10px] font-black text-white"
+              >
+                !
+              </span>
+              Check Policies
+            </Button>
+          </>
+        }
+      />
 
       {draggingTool && (
         <div className="pointer-events-none absolute inset-2 rounded-lg border-2 border-dashed border-white/80" />
@@ -1993,83 +2152,7 @@ export function IntersectionEditor() {
         </div>
       )}
 
-      <div
-        role="group"
-        aria-label="Zoom"
-        className="absolute right-3 bottom-8 z-10 flex flex-col overflow-hidden rounded-lg border bg-background/95 shadow-lg backdrop-blur"
-      >
-        <Button
-          variant="ghost"
-          size="icon-lg"
-          aria-label="Zoom in"
-          className="rounded-none text-lg"
-          onClick={() => mapRef.current?.zoomIn()}
-        >
-          +
-        </Button>
-        <div className="h-px bg-border" />
-        <Button
-          variant="ghost"
-          size="icon-lg"
-          aria-label="Zoom out"
-          className="rounded-none text-lg"
-          onClick={() => mapRef.current?.zoomOut()}
-        >
-          −
-        </Button>
-        <div className="h-px bg-border" />
-        <Button
-          variant="ghost"
-          size="icon-lg"
-          aria-label="Bird's-eye view"
-          title="Bird's-eye view"
-          className="rounded-none"
-          onClick={birdsEye}
-        >
-          <svg viewBox="0 0 24 24" className="size-5" aria-hidden="true">
-            <path
-              d="M2 9c2.6-1.6 5.6-1.2 8 1.6L12 13l2-2.4c2.4-2.8 5.4-3.2 8-1.6-2.8.2-4.6 1.6-6.2 3.8L12 18l-3.8-5.2C6.6 10.6 4.8 9.2 2 9z"
-              fill="currentColor"
-            />
-          </svg>
-        </Button>
-        <div className="h-px bg-border" />
-        <Button
-          variant="ghost"
-          size="icon-lg"
-          aria-label="Turn the view 180 degrees"
-          title="Turn the view 180°"
-          className="rounded-none text-lg"
-          onClick={() => {
-            const map = mapRef.current;
-            map?.easeTo({ bearing: map.getBearing() + 180, duration: 800 });
-          }}
-        >
-          ⟲
-        </Button>
-        <div className="h-px bg-border" />
-        <Button
-          variant="ghost"
-          size="icon-lg"
-          aria-label="Show imported network"
-          title="Show imported network"
-          className="rounded-none text-xs"
-          onClick={() => {
-            const map = mapRef.current;
-            if (!map) return;
-            if (network.data) showNetwork(map, network.data, true);
-            else
-              map.flyTo({
-                center: [ORIGIN.lng, ORIGIN.lat],
-                zoom: 17,
-                pitch: 58,
-                bearing: GRID_BEARING - 25,
-              });
-          }}
-        >
-          ⌖
-        </Button>
-      </div>
+      {viewControls}
 
       {basemapFailed && !mapReady && (
         <div
