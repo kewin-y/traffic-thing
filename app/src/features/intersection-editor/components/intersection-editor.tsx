@@ -73,7 +73,7 @@ import {
 } from "../lib/traffic-controls";
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
 import { componentsOverlap, gapBetween } from "../lib/spatial";
-import { snapComponent, snapTargets } from "../lib/snap";
+import { snapComponent, snapPoint, snapTargets } from "../lib/snap";
 import { ComponentMenu } from "./component-menu";
 import { ToolIcon } from "./tool-icon";
 import { NetworkPanel } from "./network-panel";
@@ -1528,9 +1528,15 @@ export function IntersectionEditor({
     let before: SceneComponent[] | null = null;
     for (const handle of HANDLES) {
       const element = document.createElement("div");
-      element.className = `size-[18px] rounded-[4px] border-2 border-neutral-900 bg-white shadow ${
-        handle.startsWith("end") ? "cursor-ew-resize" : "cursor-ns-resize"
-      }`;
+      element.className = handle.startsWith("end")
+        ? "cursor-ew-resize"
+        : "cursor-ns-resize";
+      // The visible box is small; the wrapper gives the pointer a wide,
+      // invisible hit area so grabbing it rarely pans the map instead.
+      const visible = document.createElement("div");
+      visible.className =
+        "size-3.5 rounded-[3px] border-2 border-neutral-900 bg-white shadow";
+      element.replaceChildren(visible);
       element.title = handle.startsWith("end")
         ? "Drag to change length"
         : "Drag to change width";
@@ -1544,12 +1550,18 @@ export function IntersectionEditor({
         const current = sceneRef.current.find((c) => c.id === id);
         if (!current) return;
         const { lng, lat } = marker.getLngLat();
-        const next = snapComponent(
-          resized(current, handle, toLocal(lng, lat)),
-          snapTargets(sceneRef.current, id),
-          SNAP_TOLERANCE,
-          { rotate: false },
-        );
+        const local = toLocal(lng, lat);
+        // The handle itself snaps to nearby corners and edges, so the moved
+        // resize edge lands while dragging it. Snap the marker too, so the
+        // handle stays visually on the point it resizes to.
+        const target =
+          snapPoint(
+            local,
+            snapTargets(sceneRef.current, id),
+            SNAP_TOLERANCE,
+          ) ?? local;
+        if (target !== local) marker.setLngLat(toLngLat(target));
+        const next = resized(current, handle, target);
         const problem = preview(next);
         if (problem) {
           setNotice(problem);

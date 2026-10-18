@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { SceneComponent } from "./components";
-import { snapComponent, snapTargets } from "./snap";
+import { snapComponent, snapPoint, snapTargets } from "./snap";
 
 function road(over: Partial<SceneComponent> = {}): SceneComponent {
   return {
@@ -84,6 +84,17 @@ describe("snapComponent", () => {
     expect(snapped.rotation).toBe(4);
     // Still pulled flush to the existing road's east corners.
     expect(Math.abs(snapped.y)).toBeLessThan(1.5);
+  });
+
+  test("snapPoint grabs the near corner first, then flush edges", () => {
+    const existing = road({ id: "a" });
+    const targets = snapTargets([existing]);
+    // Near the road's east end: the end corner wins within tolerance.
+    expect(snapPoint([21.5, 3.5], targets, 5)).toEqual([20, 3.3]);
+    // Near the middle of a long edge: flush on the edge.
+    expect(snapPoint([0.5, 5.5], targets, 5)).toEqual([0.5, 3.3]);
+    // Too far away: no snap.
+    expect(snapPoint([40, 40], targets, 5)).toBeNull();
   });
 
   test("snaps a sidewalk to a building's footprint corner", () => {

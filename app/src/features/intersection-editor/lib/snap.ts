@@ -216,3 +216,20 @@ export function snapComponent(
     rotation: ROUND(best.rotation),
   };
 }
+
+/**
+ * Snap a bare point (as when dragging a resize handle): corners grab corners
+ * first, otherwise the point lands flush on the nearest edge. Returns null
+ * when nothing is within `tolerance`.
+ */
+export function snapPoint(
+  point: Vec2,
+  targets: SnapTargets,
+  tolerance: number,
+): Vec2 | null {
+  const direct = nearestPoint(point, targets.points);
+  if (direct && direct.gap <= tolerance) return direct.at;
+  const segment = nearestSegment(point, targets.segments);
+  if (segment && segment.gap <= tolerance) return segment.at;
+  return null;
+}
