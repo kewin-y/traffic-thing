@@ -7,6 +7,8 @@ import { query, internalQuery } from "../_generated/server";
 import { requireProject, requireUser } from "../projects/lib/access";
 import { projectState } from "../projects/schema";
 import { runDocument } from "./schema";
+import { roadEditValidator, roadEdits } from "./lib/edits";
+import type { WorkerEdit } from "../../shared/simulations";
 import { workerConfiguration } from "./lib/config";
 
 export const configuration = query({
@@ -69,6 +71,18 @@ export const get = internalQuery({
   args: { runId: v.id("simulationRuns") },
   returns: v.union(v.null(), runDocument),
   handler: (ctx, { runId }) => ctx.db.get("simulationRuns", runId),
+});
+/** Road edits the run's snapshot scene implies, in the worker's protocol. */
+export const editsForRun = internalQuery({
+  args: { runId: v.id("simulationRuns") },
+  returns: v.array(roadEditValidator),
+  handler: async (ctx, { runId }) => {
+    const snapshot = await ctx.db
+      .query("simulationSnapshots")
+      .withIndex("by_runId", (q) => q.eq("runId", runId))
+      .unique();
+    return roadEdits(snapshot?.state.scene ?? []) as WorkerEdit[];
+  },
 });
 export const getByExternalId = internalQuery({
   args: { runId: v.string() },

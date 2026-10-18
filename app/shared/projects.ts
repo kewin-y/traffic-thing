@@ -43,6 +43,7 @@ export const sceneComponentSchema = z.object({
   rotation: z.number().finite(),
   length: z.number().positive().optional(),
   width: z.number().positive().optional(),
+  laneCount: z.number().int().positive().max(8).optional(),
   height: z.number().nonnegative().optional(),
   speedKmh: z.number().nonnegative().optional(),
   hours: z.string().max(500).optional(),

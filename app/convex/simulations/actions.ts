@@ -18,13 +18,16 @@ export const dispatch = internalAction({
       const config = workerConfiguration();
       if (!config.ready || config.transport !== "push")
         throw new Error("Worker configuration changed.");
+      const edits = await ctx.runQuery(internal.simulations.queries.editsForRun, {
+        runId,
+      });
       const response = await fetch(`${config.url}/simulate`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${env.WORKER_API_KEY}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(workerRequest(run)),
+        body: JSON.stringify(workerRequest(run, edits)),
         redirect: "error",
         signal: AbortSignal.timeout(420_000),
       });
@@ -45,7 +48,7 @@ export const dispatch = internalAction({
         if (retryable) throw new Error("Worker temporarily unavailable.");
         return null;
       }
-      const result = parseWorkerResult(await response.json(), run);
+      const result = parseWorkerResult(await response.json(), run, edits);
       await ctx.runMutation(finish, {
         runId,
         leaseId: run.attempts,

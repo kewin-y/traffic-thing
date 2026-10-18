@@ -23,6 +23,7 @@ import type * as projects_queries from "../projects/queries.js";
 import type * as simulations_actions from "../simulations/actions.js";
 import type * as simulations_httpActions from "../simulations/httpActions.js";
 import type * as simulations_lib_config from "../simulations/lib/config.js";
+import type * as simulations_lib_edits from "../simulations/lib/edits.js";
 import type * as simulations_lib_pool from "../simulations/lib/pool.js";
 import type * as simulations_lib_result from "../simulations/lib/result.js";
 import type * as simulations_mutations from "../simulations/mutations.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   "simulations/actions": typeof simulations_actions;
   "simulations/httpActions": typeof simulations_httpActions;
   "simulations/lib/config": typeof simulations_lib_config;
+  "simulations/lib/edits": typeof simulations_lib_edits;
   "simulations/lib/pool": typeof simulations_lib_pool;
   "simulations/lib/result": typeof simulations_lib_result;
   "simulations/mutations": typeof simulations_mutations;

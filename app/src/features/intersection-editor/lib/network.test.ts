@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { loadNetwork, type PublishedNetwork } from "./network";
+import { componentFromNetworkEdge, loadNetwork, type PublishedNetwork } from "./network";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -96,4 +96,39 @@ test("failed downloads do not return a partial network", async () => {
   await expect(
     loadNetwork(published, new AbortController().signal),
   ).rejects.toThrow("download failed");
+});
+
+test("network edges convert to editable road components", () => {
+  const feature: Parameters<typeof componentFromNetworkEdge>[0] = {
+    type: "Feature",
+    id: "-123#0",
+    properties: {
+      edge_id: "-123#0",
+      name: "Bremner Boulevard",
+      lane_count: 2,
+      speed_mps: 13.89,
+      length_metres: 200,
+    },
+    geometry: {
+      type: "LineString",
+      coordinates: [
+        [-79.39, 43.64],
+        [-79.38, 43.65],
+      ],
+    },
+  };
+  const component = componentFromNetworkEdge(feature);
+  expect(component.kind).toBe("road");
+  expect(component.osmId).toBe("edge/-123#0");
+  expect(component.laneCount).toBe(2);
+  // Two lanes at 3.3 m each, keyed off the edge's own centreline.
+  expect(component.width).toBe(6.6);
+  expect(component.path?.length).toBe(2);
+  // The path is centred on the edge, in local grid metres.
+  const centre = component.path!.reduce(
+    ([x, y], [px, py]) => [x + px / 2, y + py / 2] as [number, number],
+    [0, 0],
+  );
+  expect(centre[0]).toBeCloseTo(0, 1);
+  expect(centre[1]).toBeCloseTo(0, 1);
 });

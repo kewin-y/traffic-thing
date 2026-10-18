@@ -45,7 +45,7 @@ async function setup() {
   };
   return { t, alice, bob, project, args };
 }
-function result(runId: string) {
+function result(runId: string, appliedEdits: unknown[] = []) {
   return {
     request_id: runId,
     network: "toronto-downtown",
@@ -60,7 +60,7 @@ function result(runId: string) {
     average_trip_duration_seconds: 100,
     average_waiting_time_seconds: 2,
     average_time_loss_seconds: 4,
-    applied_edits: [],
+    applied_edits: appliedEdits,
   };
 }
 const auth = {
@@ -131,6 +131,66 @@ test("start is private, idempotent, captures an immutable full snapshot, and pre
     request_id: runId,
   });
 });
+test("network edge overrides become worker edits, echoed back and verified", async () => {
+  const { t, alice, args, project } = await setup();
+  const state = emptyProjectState();
+  state.scene.push(
+    {
+      id: "closed",
+      kind: "removed_osm",
+      x: 0,
+      y: 0,
+      rotation: 0,
+      osmId: "edge/-123#0",
+    },
+    {
+      id: "narrowed",
+      kind: "road",
+      x: 1,
+      y: 0,
+      rotation: 0,
+      width: 3.3,
+      laneCount: 2,
+      path: [
+        [-10, 0],
+        [10, 0],
+      ],
+      osmId: "edge/456#0",
+    },
+  );
+  await alice.mutation(api.projects.mutations.save, {
+    projectId: project.id,
+    expectedRevision: 0,
+    state,
+  });
+  const runId = await alice.mutation(api.simulations.mutations.start, {
+    ...args,
+    requestId: "edits-request-1234",
+    expectedRevision: 1,
+  });
+  const edits = await t.query(internal.simulations.queries.editsForRun, {
+    runId,
+  });
+  expect(edits).toEqual([
+    { type: "close_edge", edge_id: "-123#0" },
+    { type: "set_lane_count", edge_id: "456#0", lane_count: 1 },
+  ]);
+  const run = await t.mutation(internal.simulations.mutations.claim, {});
+  expect(workerRequest(run!, edits)).toMatchObject({
+    edits: [
+      { type: "close_edge", edge_id: "-123#0" },
+      { type: "set_lane_count", edge_id: "456#0", lane_count: 1 },
+    ],
+  });
+  // The worker's own echo of the applied edits parses and matches.
+  expect(() => parseWorkerResult(result(runId, edits), run!, edits)).not
+    .toThrow();
+  // An echo missing an edit fails the run instead of misattributing metrics.
+  expect(() =>
+    parseWorkerResult(result(runId, edits.slice(1)), run!, edits),
+  ).toThrow("different edits");
+});
+
 test("settings, stale revisions, and missing configuration are rejected", async () => {
   const { alice, args } = await setup();
   for (const settings of [

@@ -48,6 +48,7 @@ import { useRoadNetwork } from "../hooks/use-road-network";
 import {
   NETWORK_LAYER,
   NETWORK_SOURCE,
+  componentFromNetworkEdge,
   type LoadedNetwork,
 } from "../lib/network";
 import type { ProjectState } from "../../../../shared/projects";
@@ -72,12 +73,12 @@ import {
 } from "../lib/traffic-controls";
 import { addNetworkLayer, showNetwork } from "../lib/network-layer";
 import { componentsOverlap, gapBetween } from "../lib/spatial";
+import { snapComponent, snapPoint, snapTargets } from "../lib/snap";
 import { ComponentMenu } from "./component-menu";
 import { ToolIcon } from "./tool-icon";
 import { NetworkPanel } from "./network-panel";
 import { PANEL_DEFAULT_WIDTH, SidePanel, type PanelTab } from "./side-panel";
 
-const TOOL_MIME = "application/x-traffic-thing-tool";
 const LAYER_IDS = ["solid", "marking", "ground"] as const;
 const HIGHLIGHT = "#ffc94d";
 const MEASURE_COLOUR = "#e8338b";
@@ -106,6 +107,10 @@ const STREET_CLASSES = [
 const MIN_SNIP = 12;
 /** Farthest a selection corner may land from the camera's centre, in metres. */
 const MAX_SNIP_REACH = 4000;
+/** Farthest a placed or dragged component will bend to meet its neighbours. */
+const SNAP_TOLERANCE = 5;
+/** Placement-rotation step for the R / Shift+R keys. */
+const ROTATE_STEP = 15;
 
 // Downtown Toronto: Bathurst St to the Don Valley, the waterfront to Bloor St.
 const DOWNTOWN_BOUNDS: [[number, number], [number, number]] = [
@@ -226,6 +231,33 @@ function addSceneLayers(map: MapLibreMap): BasemapLayers {
         "fill-extrusion-color": ["get", "colour"],
         "fill-extrusion-base": ["get", "base"],
         "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-vertical-gradient": true,
+      },
+    },
+    firstLabel,
+  );
+  // Translucent copies of the scene layers for the placement ghost.
+  for (const id of ["ghost", "ghost-solid"] as const)
+    map.addSource(id, { type: "geojson", data: EMPTY });
+  map.addLayer(
+    {
+      id: "ghost-fill",
+      type: "fill",
+      source: "ghost",
+      paint: { "fill-color": ["get", "colour"], "fill-opacity": 0.45 },
+    },
+    "solid",
+  );
+  map.addLayer(
+    {
+      id: "ghost-solid",
+      type: "fill-extrusion",
+      source: "ghost-solid",
+      paint: {
+        "fill-extrusion-color": ["get", "colour"],
+        "fill-extrusion-base": ["get", "base"],
+        "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-opacity": 0.45,
         "fill-extrusion-vertical-gradient": true,
       },
     },
@@ -473,7 +505,7 @@ export function IntersectionEditor({
   }, [initialState, scene, areas, measurements, camera, onStateChange]);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [draggingTool, setDraggingTool] = useState<ComponentKind | null>(null);
+  const [activeTool, setActiveTool] = useState<ComponentKind | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [basemapFailed, setBasemapFailed] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -507,6 +539,12 @@ export function IntersectionEditor({
   const frameRef = useRef<number | null>(null);
   const selectedRef = useRef<string | null>(null);
   const sourceSelectionRef = useRef<SceneComponent | null>(null);
+  const activeToolRef = useRef<ComponentKind | null>(null);
+  const ghostRef = useRef<SceneComponent | null>(null);
+  /** Rotation applied to the armed tool's ghost and placements, in degrees. */
+  const ghostRotationRef = useRef(0);
+  /** Where the armed tool's ghost last stood, for the rotate keys. */
+  const ghostPositionRef = useRef<Vec2 | null>(null);
   const measuringRef = useRef(false);
   const measureStartRef = useRef<string | null>(null);
 
@@ -654,6 +692,24 @@ export function IntersectionEditor({
     [drawMeasurements],
   );
 
+  /** Show the armed tool's component under the pointer, or clear it. */
+  const drawGhost = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const ghost = ghostRef.current;
+    const layers = ghost ? renderScene([ghost], new Map()) : null;
+    const flat = layers
+      ? {
+          type: "FeatureCollection" as const,
+          features: [...layers.ground.features, ...layers.marking.features],
+        }
+      : EMPTY;
+    map.getSource<GeoJSONSource>("ghost")?.setData(flat);
+    map.getSource<GeoJSONSource>("ghost-solid")?.setData(
+      layers ? layers.solid : EMPTY,
+    );
+  }, []);
+
   /**
    * Apply a live (uncommitted) change during a drag. Returns why the change
    * was refused, or null when it was applied.
@@ -689,6 +745,127 @@ export function IntersectionEditor({
       return null;
     },
     [draw],
+  );
+
+  const toggleMeasuring = useCallback(() => {
+    const next = !measuringRef.current;
+    measuringRef.current = next;
+    measureStartRef.current = null;
+    setMeasuring(next);
+    select(null);
+    setNotice(next ? "Measure: click one component, then another." : null);
+  }, [select]);
+
+  /** A component of `kind` at a local position, rotated and snapped. */
+  const placeCandidate = useCallback(
+    (kind: ComponentKind, [x, y]: Vec2) =>
+      snapComponent(
+        { ...componentFromDrop(kind, x, y), rotation: ghostRotationRef.current },
+        snapTargets(sceneRef.current),
+        SNAP_TOLERANCE,
+      ),
+    [],
+  );
+
+  /** Move the armed tool's ghost to a local position. */
+  const updateGhost = useCallback(
+    ([x, y]: Vec2) => {
+      const kind = activeToolRef.current;
+      if (!kind) return;
+      ghostPositionRef.current = [x, y];
+      ghostRef.current = placeCandidate(kind, [x, y]);
+      drawGhost();
+    },
+    [drawGhost, placeCandidate],
+  );
+
+  /** Arm a toolbox tool for click-to-place, or disarm with null. */
+  const armTool = useCallback(
+    (kind: ComponentKind | null) => {
+      activeToolRef.current = kind;
+      setActiveTool(kind);
+      setMenu(null);
+      setIssuePopup(null);
+      ghostRef.current = null;
+      ghostPositionRef.current = null;
+      ghostRotationRef.current = 0;
+      drawGhost();
+      if (!kind) return;
+      select(null);
+      if (measuringRef.current) toggleMeasuring();
+      setSelectingArea(false);
+      setSnip(null);
+      setNotice(
+        `${TOOL_BY_KIND[kind].label}: click the map to place it. Esc to cancel.`,
+      );
+    },
+    [drawGhost, select, toggleMeasuring],
+  );
+
+  /** Place the armed tool's component at the clicked map position. */
+  const placeComponent = useCallback(
+    (kind: ComponentKind, lngLat: { lng: number; lat: number }) => {
+      const [x, y] = toLocal(lngLat.lng, lngLat.lat);
+      const created = placeCandidate(kind, [x, y]);
+      if (!isEditable(areasRef.current, [created.x, created.y])) {
+        setNotice(READ_ONLY);
+        return;
+      }
+      const next = [...sceneRef.current, created];
+      if (breaksSidewalkRule(next, new Set([created.id]))) {
+        setNotice(SIDEWALK_RULE);
+        return;
+      }
+      growingRef.current.set(created.id, performance.now());
+      commit(next);
+      select(created.id);
+      setNotice(
+        `Added ${describe(created).toLowerCase()}. Click again to place another, or press Esc to finish.`,
+      );
+    },
+    [commit, select, placeCandidate],
+  );
+
+  /** Turn a selected network edge into an editable road component. */
+  const editNetworkRoad = useCallback(
+    (edgeId: string) => {
+      const data = network.data;
+      if (!data) return;
+      const existing = sceneRef.current.find(
+        (c) => c.osmId === `edge/${edgeId}`,
+      );
+      if (existing) {
+        select(existing.id);
+        return;
+      }
+      const edge = data.roads.features.find(
+        (feature) => feature.properties.edge_id === edgeId,
+      );
+      if (!edge) return;
+      const middle =
+        edge.geometry.coordinates[Math.floor(edge.geometry.coordinates.length / 2)];
+      if (
+        !isEditable(
+          areasRef.current,
+          toLocal(middle[0], middle[1]),
+        )
+      ) {
+        setNotice(READ_ONLY);
+        return;
+      }
+      const created = componentFromNetworkEdge(edge);
+      if (breaksSidewalkRule([...sceneRef.current, created], new Set([created.id]))) {
+        setNotice(SIDEWALK_RULE);
+        return;
+      }
+      growingRef.current.set(created.id, performance.now());
+      commit([...sceneRef.current, created]);
+      select(created.id);
+      setNotice(
+        `Now editing ${edge.properties.name || "this road"}. Change or delete it like any other road.`,
+      );
+    },
+    [network.data, commit, select],
   );
 
   /**
@@ -730,6 +907,8 @@ export function IntersectionEditor({
       before: SceneComponent[];
       moved: boolean;
       blocked: boolean;
+      /** Neighbour outlines to snap to, built once when the drag starts. */
+      targets: ReturnType<typeof snapTargets>;
     } | null = null;
     let justDragged = false;
     const markers = markersRef.current;
@@ -878,6 +1057,93 @@ export function IntersectionEditor({
         map!.getCanvas().style.cursor = "";
       };
 
+      // Resizing by dragging the selected component's edge itself: the whole
+      // perimeter responds, within a screen-pixel band of the outline.
+      let resize: {
+        id: string;
+        handle: Handle;
+        before: SceneComponent[];
+        moved: boolean;
+        blocked: boolean;
+      } | null = null;
+      const RESIZE_BAND = 10;
+      const perimeterHit = (point: { x: number; y: number }) => {
+        const id = selectedRef.current;
+        if (!id || measuringRef.current || activeToolRef.current || drag)
+          return null;
+        const component = sceneRef.current.find((c) => c.id === id);
+        if (!component || !isResizable(component)) return null;
+        const r = (component.rotation * Math.PI) / 180;
+        const cos = Math.cos(r);
+        const sin = Math.sin(r);
+        const hw = (component.length ?? 0) / 2;
+        const hh = (component.width ?? 0) / 2;
+        // Each edge: NW→NE is north (side+), NE→SE east (end+), and so on.
+        const local: [number, number][] = [
+          [-hw, hh],
+          [hw, hh],
+          [hw, -hh],
+          [-hw, -hh],
+        ];
+        const hand: Handle[] = ["side+", "end+", "side-", "end-"];
+        let best: { handle: Handle; cursor: string; distance: number } | null =
+          null;
+        for (let i = 0; i < 4; i++) {
+          const a = map!.project(
+            toLngLat([
+              component.x + local[i][0] * cos - local[i][1] * sin,
+              component.y + local[i][0] * sin + local[i][1] * cos,
+            ]),
+          );
+          const j = (i + 1) % 4;
+          const b = map!.project(
+            toLngLat([
+              component.x + local[j][0] * cos - local[j][1] * sin,
+              component.y + local[j][0] * sin + local[j][1] * cos,
+            ]),
+          );
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const lengthSq = dx * dx + dy * dy;
+          const t =
+            lengthSq === 0
+              ? 0
+              : Math.max(
+                  0,
+                  Math.min(
+                    1,
+                    ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSq,
+                  ),
+                );
+          const distance = Math.hypot(
+            a.x + t * dx - point.x,
+            a.y + t * dy - point.y,
+          );
+          if (distance <= RESIZE_BAND && (!best || distance < best.distance))
+            best = {
+              handle: hand[i],
+              cursor: Math.abs(dy) > Math.abs(dx) ? "ew-resize" : "ns-resize",
+              distance,
+            };
+        }
+        return best ? { handle: best.handle, cursor: best.cursor } : null;
+      };
+      const endResize = () => {
+        if (!resize) return;
+        if (resize.moved) {
+          remember(resize.before);
+          setScene(sceneRef.current);
+          justDragged = true;
+        }
+        resize = null;
+        map!.dragPan.enable();
+        map!.getCanvas().style.cursor = "";
+      };
+      const endGesture = () => {
+        endDrag();
+        endResize();
+      };
+
       map.on("mousedown", (e) => {
         // An intentional new press clears suppression; a drag-generated click does not.
         justDragged = false;
@@ -886,6 +1152,20 @@ export function IntersectionEditor({
           return;
         }
         if (e.originalEvent.button !== 0 || measuringRef.current) return;
+        // The selected component's own perimeter resizes it.
+        const hit = perimeterHit(e.point);
+        if (hit) {
+          e.preventDefault();
+          map!.dragPan.disable();
+          resize = {
+            id: selectedRef.current!,
+            handle: hit.handle,
+            before: sceneRef.current,
+            moved: false,
+            blocked: false,
+          };
+          return;
+        }
         const pick = pickAt(e.point);
         const sourceSelection = sourceSelectionRef.current;
         const component =
@@ -923,12 +1203,47 @@ export function IntersectionEditor({
           before: sceneRef.current,
           moved: false,
           blocked: false,
+          targets: snapTargets(sceneRef.current, component.id),
         };
         map!.getCanvas().style.cursor = "grabbing";
       });
 
       map.on("mousemove", (e) => {
+        if (resize) {
+          const current = sceneRef.current.find((c) => c.id === resize!.id);
+          if (!current) {
+            endResize();
+            return;
+          }
+          const local = toLocal(e.lngLat.lng, e.lngLat.lat);
+          const target =
+            snapPoint(
+              local,
+              snapTargets(sceneRef.current, resize.id),
+              SNAP_TOLERANCE,
+            ) ?? local;
+          const next = resized(current, resize.handle, target);
+          const problem = preview(next);
+          if (!problem) {
+            resize.moved = true;
+            setNotice(`Length ${next.length} m · width ${next.width} m`);
+          } else if (!resize.blocked) {
+            resize.blocked = true;
+            setNotice(problem);
+          }
+          return;
+        }
         if (!drag) {
+          if (activeToolRef.current) {
+            updateGhost(toLocal(e.lngLat.lng, e.lngLat.lat));
+            map!.getCanvas().style.cursor = "crosshair";
+            return;
+          }
+          const perimeter = perimeterHit(e.point);
+          if (perimeter) {
+            map!.getCanvas().style.cursor = perimeter.cursor;
+            return;
+          }
           const pick = pickAt(e.point);
           const id =
             pick?.kind === "component"
@@ -967,7 +1282,9 @@ export function IntersectionEditor({
           x: round(drag.origin[0] + x - drag.grab[0]),
           y: round(drag.origin[1] + y - drag.grab[1]),
         };
-        const problem = preview(moved);
+        const problem = preview(
+          snapComponent(moved, drag.targets, SNAP_TOLERANCE),
+        );
         if (!problem) {
           drag.moved = true;
         } else if (!drag.blocked) {
@@ -976,10 +1293,10 @@ export function IntersectionEditor({
         }
       });
 
-      map.on("mouseup", endDrag);
-      window.addEventListener("mouseup", endDrag);
+      map.on("mouseup", endGesture);
+      window.addEventListener("mouseup", endGesture);
       removeWindowListener = () =>
-        window.removeEventListener("mouseup", endDrag);
+        window.removeEventListener("mouseup", endGesture);
       map.on("contextmenu", (e) => {
         // Right-drag rotates the camera; only a stationary right-click opens the menu.
         if (
@@ -1028,6 +1345,11 @@ export function IntersectionEditor({
           return;
         }
 
+        if (activeToolRef.current) {
+          placeComponent(activeToolRef.current, e.lngLat);
+          return;
+        }
+
         inspect(pick, e.point);
       });
       map.on("dragstart", () => setMenu(null));
@@ -1042,7 +1364,7 @@ export function IntersectionEditor({
       map?.remove();
       mapRef.current = null;
     };
-  }, [commit, draw, drawGrey, preview, remember, select]);
+  }, [armTool, commit, draw, drawGhost, drawGrey, placeComponent, preview, remember, select, updateGhost]);
 
   // Real-world traffic controls, as a reference layer under the scene.
   useEffect(() => {
@@ -1137,6 +1459,28 @@ export function IntersectionEditor({
       }
     };
   }, [mapReady, selectedRoad]);
+
+  // Hide imported network edges the scene has made editable or deleted.
+  const overriddenEdges = useMemo(
+    () => [
+      ...new Set(
+        scene.flatMap((c) =>
+          typeof c.osmId === "string" && c.osmId.startsWith("edge/")
+            ? [c.osmId.slice("edge/".length)]
+            : [],
+        ),
+      ),
+    ],
+    [scene],
+  );
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map || !map.getLayer(NETWORK_LAYER)) return;
+    map.setFilter(NETWORK_LAYER, [
+      "!",
+      ["in", ["get", "edge_id"], ["literal", overriddenEdges]],
+    ]);
+  }, [overriddenEdges, mapReady, network.data]);
 
   // Hide basemap buildings and roads that were converted or deleted.
   useEffect(() => {
@@ -1314,9 +1658,15 @@ export function IntersectionEditor({
     let before: SceneComponent[] | null = null;
     for (const handle of HANDLES) {
       const element = document.createElement("div");
-      element.className = `size-3.5 rounded-[3px] border-2 border-neutral-900 bg-white shadow ${
-        handle.startsWith("end") ? "cursor-ew-resize" : "cursor-ns-resize"
-      }`;
+      element.className = handle.startsWith("end")
+        ? "cursor-ew-resize"
+        : "cursor-ns-resize";
+      // The visible box is small; the wrapper gives the pointer a wide,
+      // invisible hit area so grabbing it rarely pans the map instead.
+      const visible = document.createElement("div");
+      visible.className =
+        "size-3.5 rounded-[3px] border-2 border-neutral-900 bg-white shadow";
+      element.replaceChildren(visible);
       element.title = handle.startsWith("end")
         ? "Drag to change length"
         : "Drag to change width";
@@ -1330,7 +1680,18 @@ export function IntersectionEditor({
         const current = sceneRef.current.find((c) => c.id === id);
         if (!current) return;
         const { lng, lat } = marker.getLngLat();
-        const next = resized(current, handle, toLocal(lng, lat));
+        const local = toLocal(lng, lat);
+        // The handle itself snaps to nearby corners and edges, so the moved
+        // resize edge lands while dragging it. Snap the marker too, so the
+        // handle stays visually on the point it resizes to.
+        const target =
+          snapPoint(
+            local,
+            snapTargets(sceneRef.current, id),
+            SNAP_TOLERANCE,
+          ) ?? local;
+        if (target !== local) marker.setLngLat(toLngLat(target));
+        const next = resized(current, handle, target);
         const problem = preview(next);
         if (problem) {
           setNotice(problem);
@@ -1456,15 +1817,6 @@ export function IntersectionEditor({
     [commit, select],
   );
 
-  const toggleMeasuring = useCallback(() => {
-    const next = !measuringRef.current;
-    measuringRef.current = next;
-    measureStartRef.current = null;
-    setMeasuring(next);
-    select(null);
-    setNotice(next ? "Measure: click one component, then another." : null);
-  }, [select]);
-
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       // Typing in a field (such as the chat box) must not edit the map.
@@ -1479,6 +1831,7 @@ export function IntersectionEditor({
         setMenu(null);
         setIssuePopup(null);
         select(null);
+        armTool(null);
         if (measuringRef.current) toggleMeasuring();
         setSelectingArea(false);
         setSnip(null);
@@ -1496,10 +1849,20 @@ export function IntersectionEditor({
           undo();
         }
       }
+      // While placing: R rotates the ghost clockwise, Shift+R back.
+      else if (key === "r" && activeToolRef.current) {
+        event.preventDefault();
+        ghostRotationRef.current =
+          (ghostRotationRef.current + (event.shiftKey ? -ROTATE_STEP : ROTATE_STEP) + 360) % 360;
+        if (ghostPositionRef.current) updateGhost(ghostPositionRef.current);
+        setNotice(
+          `${TOOL_BY_KIND[activeToolRef.current].label}: rotation ${ghostRotationRef.current}°.`,
+        );
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [menu, selected, remove, undo, redo, select, toggleMeasuring]);
+  }, [armTool, menu, selected, remove, undo, redo, select, toggleMeasuring, updateGhost]);
 
   /** Look straight down on everything editable, or on downtown if nothing is. */
   function birdsEye() {
@@ -1676,38 +2039,6 @@ export function IntersectionEditor({
     );
   }
 
-  function onDrop(event: React.DragEvent<HTMLDivElement>) {
-    const kind = event.dataTransfer.getData(TOOL_MIME) as ComponentKind;
-    setDraggingTool(null);
-    const map = mapRef.current;
-    const container = containerRef.current;
-    if (!kind || !TOOL_BY_KIND[kind] || !map || !container) return;
-    if ((event.target as HTMLElement).closest("[data-toolbox]")) return;
-    event.preventDefault();
-    const box = container.getBoundingClientRect();
-    const { lng, lat } = map.unproject([
-      event.clientX - box.left,
-      event.clientY - box.top,
-    ]);
-    const [x, y] = toLocal(lng, lat);
-    if (!isEditable(areasRef.current, [x, y])) {
-      setNotice(READ_ONLY);
-      return;
-    }
-    const created = componentFromDrop(kind, x, y);
-    const next = [...sceneRef.current, created];
-    if (breaksSidewalkRule(next, new Set([created.id]))) {
-      setNotice(SIDEWALK_RULE);
-      return;
-    }
-    growingRef.current.set(created.id, performance.now());
-    commit(next);
-    select(created.id);
-    setNotice(
-      `Added ${describe(created).toLowerCase()}. Drag the handles to resize it.`,
-    );
-  }
-
   /**
    * Turn a quarter at a time between the four directions of Toronto's street
    * grid (whose "north" runs up Yonge Street), so streets stay parallel to
@@ -1825,13 +2156,6 @@ export function IntersectionEditor({
   return (
     <div
       className="relative h-full min-h-0 overflow-clip bg-muted"
-      onDragOver={(event) => {
-        if (event.dataTransfer.types.includes(TOOL_MIME)) {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "copy";
-        }
-      }}
-      onDrop={onDrop}
       onContextMenu={(event) => event.preventDefault()}
     >
       <div
@@ -1946,7 +2270,8 @@ export function IntersectionEditor({
         createPortal(
           <div className="p-3">
             <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
-              Drag a component onto an editable area of the map.
+              Pick a component, then click an editable area of the map to place
+              it. Esc cancels.
             </p>
             {groups.map((group) => (
               <div key={group} className="pb-5">
@@ -1954,28 +2279,28 @@ export function IntersectionEditor({
                   {group}
                 </p>
                 <div className="grid grid-cols-3 gap-2">
-                  {TOOLS.filter((tool) => tool.group === group).map((tool) => (
-                    <div
-                      key={tool.kind}
-                      draggable
-                      title={`${tool.label}: ${tool.hint}`}
-                      onDragStart={(event) => {
-                        event.dataTransfer.setData(TOOL_MIME, tool.kind);
-                        event.dataTransfer.effectAllowed = "copy";
-                        const icon = event.currentTarget.querySelector("svg");
-                        if (icon) event.dataTransfer.setDragImage(icon, 14, 14);
-                        setDraggingTool(tool.kind);
-                        setMenu(null);
-                      }}
-                      onDragEnd={() => setDraggingTool(null)}
-                      className="flex cursor-grab flex-col items-center gap-0.5 rounded-md border border-transparent p-1 text-center transition hover:border-border hover:bg-muted active:cursor-grabbing"
-                    >
-                      <ToolIcon kind={tool.kind} className="size-7" />
-                      <span className="text-[11px] leading-tight">
-                        {tool.label}
-                      </span>
-                    </div>
-                  ))}
+                  {TOOLS.filter((tool) => tool.group === group).map((tool) => {
+                    const armed = activeTool === tool.kind;
+                    return (
+                      <button
+                        key={tool.kind}
+                        type="button"
+                        aria-pressed={armed}
+                        title={`${tool.label}: ${tool.hint}`}
+                        onClick={() => armTool(armed ? null : tool.kind)}
+                        className={`flex flex-col items-center gap-0.5 rounded-md border p-1 text-center transition ${
+                          armed
+                            ? "border-border bg-muted"
+                            : "border-transparent hover:border-border hover:bg-muted"
+                        }`}
+                      >
+                        <ToolIcon kind={tool.kind} className="size-7" />
+                        <span className="text-[11px] leading-tight">
+                          {tool.label}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -1988,6 +2313,7 @@ export function IntersectionEditor({
         leftInset={leftPanelInset}
         selectedRoad={selectedRoad}
         onClearSelection={() => setRoadSelection(null)}
+        onEditRoad={editNetworkRoad}
         panelInset={panelOpen ? panelWidth + 12 : null}
       />
 
@@ -2031,6 +2357,7 @@ export function IntersectionEditor({
                 setSnip(null);
                 setMenu(null);
                 select(null);
+                armTool(null);
                 if (measuringRef.current) toggleMeasuring();
                 setNotice(
                   next
@@ -2106,10 +2433,6 @@ export function IntersectionEditor({
           </>
         }
       />
-
-      {draggingTool && (
-        <div className="pointer-events-none absolute inset-2 rounded-lg border-2 border-dashed border-white/80" />
-      )}
 
       {menu && menuComponent && (
         <ComponentMenu

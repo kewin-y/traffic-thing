@@ -65,20 +65,25 @@ cd ../worker && uv sync --locked
 
 ## Editor features
 
-- **Add**: drag tools from the left panel onto the map. Lanes and crosswalks snap to the
-  Spadina & College sample intersection; elsewhere they're placed where you drop them.
-- **Inspect imported roads**: teal roads come from the published SUMO network.
-  Click a segment to highlight one direction of travel and inspect its lane count,
-  speed limit, and length. Selection retains its network version and SUMO edge ID;
-  road simulation edits are not connected yet. The target button fits the network.
+- **Add**: pick a tool from the left panel, then click the map to place it. Components
+  snap to nearby corners and edges — road ends butt together and angles finish
+  to match, so joints come out seamless. While placing, R / Shift+R rotate the
+  ghost in 15° steps.
+- **Inspect and edit imported roads**: teal roads come from the published SUMO
+  network. Click a segment to highlight one direction of travel and inspect its lane
+  count, speed limit, and length. "Make editable" turns that edge into an editable
+  scene component: delete it to close that direction in simulations, or change its
+  width to change the simulated lane count. Selection retains its network version and
+  SUMO edge ID. The target button fits the network.
 - **Edit buildings**: click an OpenStreetMap building to turn it into an
   editable scene component. Deleting it removes it from the basemap too. OSM street trees
   aren't in the vector tiles, so trees are added with the Tree tool.
 - **Saved projects**: scenes, editable areas, measurements, and the camera autosave
   to your account in Convex. Open recent projects from the dashboard. Existing
   browser-local maps can be imported; their original local saves are retained.
-- **Select, move and resize**: click to select, drag to move, and drag the white handles
-  to change length or width. Right-click for exact dimensions, rotation and delete.
+- **Select, move and resize**: click to select, drag to move, and drag any edge
+  (or the white handles) to change length or width. Right-click for exact
+  dimensions, rotation and delete.
   Ctrl+Z undoes.
 - **Measure**: measures the edge-to-edge distance between two components. The line
   follows them as they move.

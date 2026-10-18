@@ -1,4 +1,8 @@
-import type { FeatureCollection, LineString } from "geojson";
+import type { Feature, FeatureCollection, LineString } from "geojson";
+import { LANE_WIDTHS, type SceneComponent } from "./components";
+import { toLocal } from "./geometry";
+import { centred } from "./osm";
+import { newId } from "./scene";
 
 export const NETWORK_NAME = "toronto-downtown";
 export const NETWORK_SOURCE = "imported-network";
@@ -115,5 +119,32 @@ export async function loadNetwork(
       [bbox[0], bbox[1]],
       [bbox[2], bbox[3]],
     ],
+  };
+}
+
+/**
+ * Turn a published network edge into an editable road component, so it can
+ * be moved, resized or deleted like everything else in the scene. The edge
+ * id rides along as an `edge/…` osmId; the simulation applies scene changes
+ * back to the network as closes and lane-count changes.
+ */
+export function componentFromNetworkEdge(
+  feature: Feature<LineString, RoadProperties>,
+): SceneComponent {
+  const local = feature.geometry.coordinates.map(([lng, lat]) =>
+    toLocal(lng, lat),
+  );
+  const { x, y, relative } = centred(local);
+  const laneCount = feature.properties.lane_count;
+  return {
+    id: newId("road"),
+    kind: "road",
+    x,
+    y,
+    rotation: 0,
+    width: Math.round(laneCount * LANE_WIDTHS.car_lane * 10) / 10,
+    laneCount,
+    path: relative,
+    osmId: `edge/${feature.properties.edge_id}`,
   };
 }
