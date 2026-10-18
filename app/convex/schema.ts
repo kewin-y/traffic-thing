@@ -1,7 +1,6 @@
 import { assistantTables } from "./assistant/schema";
 import { defineSchema } from "convex/server";
 import { authTables } from "@convex-dev/auth/server";
-import { numbersTables } from "./numbers/schema";
 import { networksTables } from "./networks/schema";
 import { projectsTables } from "./projects/schema";
 import { simulationsTables } from "./simulations/schema";
@@ -12,7 +11,6 @@ import { simulationsTables } from "./simulations/schema";
 export default defineSchema({
   ...authTables,
   ...assistantTables,
-  ...numbersTables,
   ...networksTables,
   ...projectsTables,
   ...simulationsTables,
