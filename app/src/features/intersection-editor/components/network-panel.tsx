@@ -9,19 +9,23 @@ interface Props {
   network: ReturnType<typeof useRoadNetwork>;
   selectedRoad: Feature<LineString, RoadProperties> | null;
   onClearSelection: () => void;
+  /** Pixels taken by the open side panel on the right, or null if closed. */
+  panelInset: number | null;
 }
 
 export function NetworkPanel({
   network,
   selectedRoad,
   onClearSelection,
+  panelInset,
 }: Props) {
   return (
     <>
       <div
         role="status"
         aria-live="polite"
-        className="absolute top-3 right-36 left-48 z-10 mx-auto max-w-sm rounded-lg border bg-background/95 px-3 py-2 text-xs shadow-lg backdrop-blur"
+        style={{ right: panelInset ?? 144 }}
+        className="absolute top-3 left-48 z-10 mx-auto max-w-sm rounded-lg border bg-background/95 px-3 py-2 text-xs shadow-lg backdrop-blur"
       >
         <p className="font-semibold">Toronto downtown roads</p>
         <p className="mt-1 text-muted-foreground">
@@ -47,7 +51,8 @@ export function NetworkPanel({
       {selectedRoad && (
         <section
           aria-label="Selected road"
-          className="absolute top-28 right-3 z-10 w-64 rounded-lg border bg-background/95 p-3 text-sm shadow-lg backdrop-blur"
+          style={{ right: panelInset ?? 12 }}
+          className="absolute top-28 z-10 w-64 rounded-lg border bg-background/95 p-3 text-sm shadow-lg backdrop-blur"
         >
           <div className="flex items-start justify-between gap-2">
             <h2 className="font-semibold">
